@@ -1,4 +1,8 @@
-# Private class: See README.md.
+# @summary
+#   Params class.
+#
+# @api private
+#
 class mysql::params {
 
   $manage_config_file     = true
@@ -471,8 +475,6 @@ class mysql::params {
       'max_connections'       => '151',
       'pid-file'              => $mysql::params::pidfile,
       'port'                  => '3306',
-      'query_cache_limit'     => '1M',
-      'query_cache_size'      => '16M',
       'skip-external-locking' => true,
       'socket'                => $mysql::params::socket,
       'ssl'                   => false,

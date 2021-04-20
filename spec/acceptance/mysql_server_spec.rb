@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 describe 'mysql class' do
@@ -45,6 +47,26 @@ describe 'mysql class' do
 
     it 'behaves idempotently' do
       idempotent_apply(pp)
+    end
+
+    describe 'override_options' do
+      let(:pp) do
+        <<-MANIFEST
+        class { '::mysql::server':
+        override_options => {
+                  'mysqld' => {
+                  'log-bin' => '/var/log/mariadb/mariadb-bin.log',}
+           }
+          }
+          MANIFEST
+      end
+
+      it 'can be set' do
+        export_locales
+        apply_manifest(pp, catch_failures: true) do |r|
+          expect(r.stderr).to be_empty
+        end
+      end
     end
   end
 

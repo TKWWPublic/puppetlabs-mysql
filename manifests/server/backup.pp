@@ -17,9 +17,9 @@
 #   }
 #
 # @param backupuser
-#   MySQL user with backup administrator privileges.
+#   MySQL user to create with backup administrator privileges.
 # @param backuppassword
-#   Password for `backupuser`.
+#   Password to create for `backupuser`.
 # @param backupdir
 #   Directory to store backup.
 # @param backupdirmode
@@ -48,6 +48,8 @@
 #   Dump stored routines (procedures and functions) from dumped databases when doing a `file_per_database` backup.
 # @param include_triggers
 #   Dump triggers for each dumped table when doing a `file_per_database` backup.
+# @param incremental_backups
+#   A flag to activate/deactivate incremental backups. Currently only supported by the xtrabackup provider.
 # @param ensure
 # @param time
 #   An array of two elements to set the backup time. Allows ['23', '5'] (i.e., 23:05) or ['3', '45'] (i.e., 03:45) for HH:MM times.
@@ -63,6 +65,13 @@
 #   Defines the maximum SQL statement size for the backup dump script. The default value is 1MB, as this is the default MySQL Server value.
 # @param optional_args
 #   Specifies an array of optional arguments which should be passed through to the backup tool. (Supported by the xtrabackup and mysqldump providers.)
+# @param install_cron
+#   Manage installation of cron package
+# @param compression_command
+#   Configure the command used to compress the backup (when using the mysqldump provider). Make sure the command exists
+#   on the target system. Packages for it are NOT automatically installed.
+# @param compression_extension
+#   Configure the file extension for the compressed backup (when using the mysqldump provider)
 class mysql::server::backup (
   $backupuser               = undef,
   $backuppassword           = undef,
@@ -88,38 +97,44 @@ class mysql::server::backup (
   $provider                 = 'mysqldump',
   $maxallowedpacket         = '1M',
   $optional_args            = [],
+  $incremental_backups      = true,
+  $install_cron             = true,
+  $compression_command      = undef,
+  $compression_extension    = undef
 ) inherits mysql::params {
-
   if $prescript and $provider =~ /(mysqldump|mysqlbackup)/ {
-    warning(translate("The 'prescript' option is not currently implemented for the %{provider} backup provider.",
-            {'provider' => $provider}))
+    warning("The 'prescript' option is not currently implemented for the ${provider} backup provider.")
   }
 
   create_resources('class', {
-    "mysql::backup::${provider}" => {
-      'backupuser'               => $backupuser,
-      'backuppassword'           => $backuppassword,
-      'backupdir'                => $backupdir,
-      'backupdirmode'            => $backupdirmode,
-      'backupdirowner'           => $backupdirowner,
-      'backupdirgroup'           => $backupdirgroup,
-      'backupcompress'           => $backupcompress,
-      'backuprotate'             => $backuprotate,
-      'backupmethod'             => $backupmethod,
-      'backup_success_file_path' => $backup_success_file_path,
-      'ignore_events'            => $ignore_events,
-      'delete_before_dump'       => $delete_before_dump,
-      'backupdatabases'          => $backupdatabases,
-      'file_per_database'        => $file_per_database,
-      'include_routines'         => $include_routines,
-      'include_triggers'         => $include_triggers,
-      'ensure'                   => $ensure,
-      'time'                     => $time,
-      'prescript'                => $prescript,
-      'postscript'               => $postscript,
-      'execpath'                 => $execpath,
-      'maxallowedpacket'         => $maxallowedpacket,
-      'optional_args'            => $optional_args,
-    }
+      "mysql::backup::${provider}" => {
+        'backupuser'               => $backupuser,
+        'backuppassword'           => $backuppassword,
+        'backupdir'                => $backupdir,
+        'backupdirmode'            => $backupdirmode,
+        'backupdirowner'           => $backupdirowner,
+        'backupdirgroup'           => $backupdirgroup,
+        'backupcompress'           => $backupcompress,
+        'backuprotate'             => $backuprotate,
+        'backupmethod'             => $backupmethod,
+        'backup_success_file_path' => $backup_success_file_path,
+        'ignore_events'            => $ignore_events,
+        'delete_before_dump'       => $delete_before_dump,
+        'backupdatabases'          => $backupdatabases,
+        'file_per_database'        => $file_per_database,
+        'include_routines'         => $include_routines,
+        'include_triggers'         => $include_triggers,
+        'ensure'                   => $ensure,
+        'time'                     => $time,
+        'prescript'                => $prescript,
+        'postscript'               => $postscript,
+        'execpath'                 => $execpath,
+        'maxallowedpacket'         => $maxallowedpacket,
+        'optional_args'            => $optional_args,
+        'incremental_backups'      => $incremental_backups,
+        'install_cron'             => $install_cron,
+        'compression_command'      => $compression_command,
+        'compression_extension'    => $compression_extension,
+      }
   })
 }

@@ -4,11 +4,9 @@
 # @api private
 #
 class mysql::server::config {
-
   $options = $mysql::server::_options
   $includedir = $mysql::server::includedir
   $managed_dirs = $mysql::server::managed_dirs
-
 
   File {
     owner  => 'root',
@@ -36,24 +34,29 @@ class mysql::server::config {
   }
 
   #Debian: Creating world readable directories before installing.
-  if $managed_dirs {
-    $managed_dirs.each | $entry | {
-      $dir = $options['mysqld']["${entry}"]
-      if ( $dir and $dir != '/usr' and $dir != '/tmp' ) {
-        exec {"${entry}-managed_dir-mkdir":
-          command => "/bin/mkdir -p ${dir}",
-          unless  => "/usr/bin/dpkg -s ${mysql::server::package_name}",
-          notify  =>  Exec["${entry}-managed_dir-chmod"],
-        }
-        exec {"${entry}-managed_dir-chmod":
-          command     => "/bin/chmod 777 ${dir}",
-          refreshonly => true,
+  case $::operatingsystem {
+    'Debian': {
+      if $managed_dirs {
+        $managed_dirs.each | $entry | {
+          $dir = $options['mysqld']["${entry}"]
+          if ( $dir and $dir != '/usr' and $dir != '/tmp' ) {
+            exec { "${entry}-managed_dir-mkdir":
+              command => "/bin/mkdir -p ${dir}",
+              unless  => "/usr/bin/dpkg -s ${mysql::server::package_name}",
+              notify  => Exec["${entry}-managed_dir-chmod"],
+            }
+            exec { "${entry}-managed_dir-chmod":
+              command     => "/bin/chmod 777 ${dir}",
+              refreshonly => true,
+            }
+          }
         }
       }
     }
+    default: {}
   }
 
-  if $mysql::server::manage_config_file  {
+  if $mysql::server::manage_config_file {
     file { 'mysql-config-file':
       path                    => $mysql::server::config_file,
       content                 => template('mysql/my.cnf.erb'),
@@ -71,7 +74,7 @@ class mysql::server::config {
       # We then check that the value of $includedir is either undefined or that different from $configparentdir
       # We first check that it is undefined due to dirname throwing an error when given undef/empty strings
       if $includedir == undef or $includedir == '' or
-        ($configparentdir != $includedir and $configparentdir != dirname($includedir)) {
+      ($configparentdir != $includedir and $configparentdir != dirname($includedir)) {
         file { $configparentdir:
           ensure => directory,
           mode   => '0755',
@@ -81,9 +84,9 @@ class mysql::server::config {
   }
 
   if $options['mysqld']['ssl-disable'] {
-    notify {'ssl-disable':
-      message =>'Disabling SSL is evil! You should never ever do this except
-                if you are forced to use a mysql version compiled without SSL support'
+    notify { 'ssl-disable':
+      message => 'Disabling SSL is evil! You should never ever do this except
+                if you are forced to use a mysql version compiled without SSL support',
     }
   }
 }

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper_acceptance'
 
 describe 'mysql_user' do
@@ -44,7 +46,7 @@ describe 'mysql_user' do
     end
 
     describe 'changing authentication plugin', if: (Gem::Version.new(mysql_version) > Gem::Version.new('5.5.0') && os[:release] !~ %r{^16\.04}) do
-      it 'works without errors' do
+      it 'works without errors', if: (os[:family] != 'sles' && os[:release].to_i == 15) do
         pp = <<-EOS
           mysql_user { 'ashp@localhost':
             plugin => 'auth_socket',
@@ -54,14 +56,14 @@ describe 'mysql_user' do
         idempotent_apply(pp)
       end
 
-      it 'has the correct plugin' do
+      it 'has the correct plugin', if: (os[:family] != 'sles' && os[:release].to_i == 15) do
         run_shell("mysql -NBe \"select plugin from mysql.user where CONCAT(user, '@', host) = 'ashp@localhost'\"") do |r|
           expect(r.stdout.rstrip).to eq('auth_socket')
           expect(r.stderr).to be_empty
         end
       end
 
-      it 'does not have a password' do
+      it 'does not have a password', if: (os[:family] != 'sles' && os[:release].to_i == 15) do
         pre_run
         table = if Gem::Version.new(mysql_version) > Gem::Version.new('5.7.0')
                   'authentication_string'
@@ -194,6 +196,57 @@ describe 'mysql_user' do
       it 'shows correct ssl_type #stdout' do
         run_shell("mysql -NBe \"select SSL_TYPE from mysql.user where CONCAT(user, '@', host) = 'user-w-x509@localhost'\"") do |r|
           expect(r.stdout).to match(%r{^X509$})
+          expect(r.stderr).to be_empty
+        end
+      end
+    end
+  end
+  context 'using user-w-subject@localhost with ISSUER and SUBJECT' do
+    describe 'adding user' do
+      it 'works without errors' do
+        pp = <<-MANIFEST
+        mysql_user { 'user-w-subject@localhost':
+          tls_options   => [
+            "SUBJECT '/OU=MySQL Users/CN=username'",
+            "ISSUER '/CN=Certificate Authority'",
+            "CIPHER 'EDH-RSA-DES-CBC3-SHA'",
+          ],
+        }
+        MANIFEST
+        idempotent_apply(pp)
+      end
+
+      it 'finds the user #stdout' do
+        run_shell("mysql -NBe \"select '1' from mysql.user where CONCAT(user, '@', host) = 'user-w-subject@localhost'\"") do |r|
+          expect(r.stdout).to match(%r{^1$})
+          expect(r.stderr).to be_empty
+        end
+      end
+
+      it 'shows correct ssl_type #stdout' do
+        run_shell("mysql -NBe \"select SSL_TYPE from mysql.user where CONCAT(user, '@', host) = 'user-w-subject@localhost'\"") do |r|
+          expect(r.stdout).to match(%r{^SPECIFIED$})
+          expect(r.stderr).to be_empty
+        end
+      end
+
+      it 'shows correct x509_issuer #stdout' do
+        run_shell("mysql -NBe \"select X509_ISSUER from mysql.user where CONCAT(user, '@', host) = 'user-w-subject@localhost'\"") do |r|
+          expect(r.stdout).to match(%r{^/CN=Certificate Authority$})
+          expect(r.stderr).to be_empty
+        end
+      end
+
+      it 'shows correct x509_subject #stdout' do
+        run_shell("mysql -NBe \"select X509_SUBJECT from mysql.user where CONCAT(user, '@', host) = 'user-w-subject@localhost'\"") do |r|
+          expect(r.stdout).to match(%r{^/OU=MySQL Users/CN=username$})
+          expect(r.stderr).to be_empty
+        end
+      end
+
+      it 'shows correct ssl_cipher #stdout' do
+        run_shell("mysql -NBe \"select SSL_CIPHER from mysql.user where CONCAT(user, '@', host) = 'user-w-subject@localhost'\"") do |r|
+          expect(r.stdout).to match(%r{^EDH-RSA-DES-CBC3-SHA$})
           expect(r.stderr).to be_empty
         end
       end

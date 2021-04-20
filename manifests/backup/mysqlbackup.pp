@@ -27,8 +27,11 @@ class mysql::backup::mysqlbackup (
   $postscript               = false,
   $execpath                 = '/usr/bin:/usr/sbin:/bin:/sbin',
   $optional_args            = [],
+  $incremental_backups      = false,
+  $install_cron             = true,
+  $compression_command      = undef,
+  $compression_extension    = undef,
 ) inherits mysql::params {
-
   mysql_user { "${backupuser}@localhost":
     ensure        => $ensure,
     password_hash => mysql::password($backuppassword),
@@ -44,7 +47,7 @@ class mysql::backup::mysqlbackup (
     ensure     => $ensure,
     user       => "${backupuser}@localhost",
     table      => '*.*',
-    privileges => [ 'RELOAD', 'SUPER', 'REPLICATION CLIENT' ],
+    privileges => ['RELOAD', 'SUPER', 'REPLICATION CLIENT'],
     require    => Mysql_user["${backupuser}@localhost"],
   }
 
@@ -52,7 +55,7 @@ class mysql::backup::mysqlbackup (
     ensure     => $ensure,
     user       => "${backupuser}@localhost",
     table      => 'mysql.backup_progress',
-    privileges => [ 'CREATE', 'INSERT', 'DROP', 'UPDATE' ],
+    privileges => ['CREATE', 'INSERT', 'DROP', 'UPDATE'],
     require    => Mysql_user["${backupuser}@localhost"],
   }
 
@@ -60,21 +63,17 @@ class mysql::backup::mysqlbackup (
     ensure     => $ensure,
     user       => "${backupuser}@localhost",
     table      => 'mysql.backup_history',
-    privileges => [ 'CREATE', 'INSERT', 'SELECT', 'DROP', 'UPDATE' ],
+    privileges => ['CREATE', 'INSERT', 'SELECT', 'DROP', 'UPDATE'],
     require    => Mysql_user["${backupuser}@localhost"],
   }
 
-  if $::osfamily == 'RedHat' and $::operatingsystemmajrelease == '5' {
-    package {'crontabs':
-      ensure => present,
-    }
-  } elsif $::osfamily == 'RedHat' {
-    package {'cronie':
-      ensure => present,
-    }
-  } elsif $::osfamily != 'FreeBSD' {
-    package {'cron':
-      ensure => present,
+  if $install_cron {
+    if $::osfamily == 'RedHat' and $::operatingsystemmajrelease == '5' {
+      ensure_packages('crontabs')
+    } elsif $::osfamily == 'RedHat' {
+      ensure_packages('cronie')
+    } elsif $::osfamily != 'FreeBSD' {
+      ensure_packages('cron')
     }
   }
 
@@ -106,7 +105,7 @@ class mysql::backup::mysqlbackup (
       'incremental_backup_dir' => $backupdir,
       'user'                   => $backupuser,
       'password'               => $backuppassword,
-    }
+    },
   }
   $options = mysql::normalise_and_deepmerge($default_options, $mysql::server::override_options)
 

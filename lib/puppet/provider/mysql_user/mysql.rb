@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require File.expand_path(File.join(File.dirname(__FILE__), '..', 'mysql'))
 Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) do
   desc 'manage users for a mysql database.'
@@ -12,7 +14,7 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
     users.map do |name|
       if mysqld_version.nil?
         ## Default ...
-        # rubocop:disable Metrics/LineLength
+        # rubocop:disable Layout/LineLength
         query = "SELECT MAX_USER_CONNECTIONS, MAX_CONNECTIONS, MAX_QUESTIONS, MAX_UPDATES, SSL_TYPE, SSL_CIPHER, X509_ISSUER, X509_SUBJECT, PASSWORD /*!50508 , PLUGIN */ FROM mysql.user WHERE CONCAT(user, '@', host) = '#{name}'"
       elsif newer_than('mysql' => '5.7.6', 'percona' => '5.7.6')
         query = "SELECT MAX_USER_CONNECTIONS, MAX_CONNECTIONS, MAX_QUESTIONS, MAX_UPDATES, SSL_TYPE, SSL_CIPHER, X509_ISSUER, X509_SUBJECT, AUTHENTICATION_STRING, PLUGIN FROM mysql.user WHERE CONCAT(user, '@', host) = '#{name}'"
@@ -23,7 +25,7 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
       end
       @max_user_connections, @max_connections_per_hour, @max_queries_per_hour,
       @max_updates_per_hour, ssl_type, ssl_cipher, x509_issuer, x509_subject,
-      @password, @plugin, @authentication_string = mysql_caller(query, 'regular').split(%r{\s})
+      @password, @plugin, @authentication_string = mysql_caller(query, 'regular').chomp.split(%r{\t})
       @tls_options = parse_tls_options(ssl_type, ssl_cipher, x509_issuer, x509_subject)
       if newer_than('mariadb' => '10.1.21') && @plugin == 'ed25519'
         # Some auth plugins (e.g. ed25519) use authentication_string
@@ -35,7 +37,7 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
         # https://jira.mariadb.org/browse/MDEV-16238 https://jira.mariadb.org/browse/MDEV-16774
         @password = @authentication_string
       end
-      # rubocop:enable Metrics/LineLength
+      # rubocop:enable Layout/LineLength
       new(name: name,
           ensure: :present,
           password_hash: @password,
@@ -53,7 +55,7 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
   def self.prefetch(resources)
     users = instances
     # rubocop:disable Lint/AssignmentInCondition
-    resources.keys.each do |name|
+    resources.each_key do |name|
       if provider = users.find { |user| user.name == name }
         resources[name].provider = provider
       end
@@ -91,13 +93,13 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
       @property_hash[:ensure] = :present
       @property_hash[:password_hash] = password_hash
     end
-    # rubocop:disable Metrics/LineLength
+    # rubocop:disable Layout/LineLength
     if newer_than('mysql' => '5.7.6', 'percona' => '5.7.6')
       self.class.mysql_caller("ALTER USER IF EXISTS '#{merged_name}' WITH MAX_USER_CONNECTIONS #{max_user_connections} MAX_CONNECTIONS_PER_HOUR #{max_connections_per_hour} MAX_QUERIES_PER_HOUR #{max_queries_per_hour} MAX_UPDATES_PER_HOUR #{max_updates_per_hour}", 'system')
     else
       self.class.mysql_caller("GRANT USAGE ON *.* TO '#{merged_name}' WITH MAX_USER_CONNECTIONS #{max_user_connections} MAX_CONNECTIONS_PER_HOUR #{max_connections_per_hour} MAX_QUERIES_PER_HOUR #{max_queries_per_hour} MAX_UPDATES_PER_HOUR #{max_updates_per_hour}", 'system')
     end
-    # rubocop:enable Metrics/LineLength
+    # rubocop:enable Layout/LineLength
     @property_hash[:max_user_connections] = max_user_connections
     @property_hash[:max_connections_per_hour] = max_connections_per_hour
     @property_hash[:max_queries_per_hour] = max_queries_per_hour
@@ -157,12 +159,12 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
       else
         concat_name = @resource[:name]
         sql = "UPDATE mysql.user SET password = '', plugin = 'ed25519'"
-        sql << ", authentication_string = '#{string}'"
-        sql << " where CONCAT(user, '@', host) = '#{concat_name}'; FLUSH PRIVILEGES"
+        sql += ", authentication_string = '#{string}'"
+        sql += " where CONCAT(user, '@', host) = '#{concat_name}'; FLUSH PRIVILEGES"
       end
       self.class.mysql_caller(sql, 'system')
     elsif newer_than('mysql' => '5.7.6', 'percona' => '5.7.6', 'mariadb' => '10.2.0')
-      raise ArgumentError, _('Only mysql_native_password (*ABCD...XXX) hashes are supported.') unless string =~ %r{^\*|^$}
+      raise ArgumentError, _('Only mysql_native_password (*ABCD...XXX) hashes are supported.') unless %r{^\*|^$}.match?(string)
       self.class.mysql_caller("ALTER USER #{merged_name} IDENTIFIED WITH mysql_native_password AS '#{string}'", 'system')
     else
       self.class.mysql_caller("SET PASSWORD FOR #{merged_name} = '#{string}'", 'system')
@@ -208,17 +210,17 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
       else
         concat_name = @resource[:name]
         sql = "UPDATE mysql.user SET password = '', plugin = '#{string}'"
-        sql << ", authentication_string = '#{@resource[:password_hash]}'"
-        sql << " where CONCAT(user, '@', host) = '#{concat_name}'; FLUSH PRIVILEGES"
+        sql += ", authentication_string = '#{@resource[:password_hash]}'"
+        sql += " where CONCAT(user, '@', host) = '#{concat_name}'; FLUSH PRIVILEGES"
       end
-    elsif newer_than('mysql' => '5.7.6', 'percona' => '5.7.6')
+    elsif newer_than('mysql' => '5.7.6', 'percona' => '5.7.6', 'mariadb' => '10.2.0')
       sql = "ALTER USER #{merged_name} IDENTIFIED WITH '#{string}'"
-      sql << " AS '#{@resource[:password_hash]}'" if string == 'mysql_native_password'
+      sql += " AS '#{@resource[:password_hash]}'" if string == 'mysql_native_password'
     else
       # See https://bugs.mysql.com/bug.php?id=67449
       sql = "UPDATE mysql.user SET plugin = '#{string}'"
-      sql << ((string == 'mysql_native_password') ? ", password = '#{@resource[:password_hash]}'" : ", password = ''")
-      sql << " WHERE CONCAT(user, '@', host) = '#{@resource[:name]}'"
+      sql += ((string == 'mysql_native_password') ? ", password = '#{@resource[:password_hash]}'" : ", password = ''")
+      sql += " WHERE CONCAT(user, '@', host) = '#{@resource[:name]}'"
     end
 
     self.class.mysql_caller(sql, 'system')
@@ -244,9 +246,9 @@ Puppet::Type.type(:mysql_user).provide(:mysql, parent: Puppet::Provider::Mysql) 
       ['X509']
     elsif ssl_type == 'SPECIFIED'
       options = []
-      options << "CIPHER #{ssl_cipher}" if !ssl_cipher.nil? && !ssl_cipher.empty?
-      options << "ISSUER #{x509_issuer}" if !x509_issuer.nil? && !x509_issuer.empty?
-      options << "SUBJECT #{x509_subject}" if !x509_subject.nil? && !x509_subject.empty?
+      options << "CIPHER '#{ssl_cipher}'" if !ssl_cipher.nil? && !ssl_cipher.empty?
+      options << "ISSUER '#{x509_issuer}'" if !x509_issuer.nil? && !x509_issuer.empty?
+      options << "SUBJECT '#{x509_subject}'" if !x509_subject.nil? && !x509_subject.empty?
       options
     else
       ['NONE']

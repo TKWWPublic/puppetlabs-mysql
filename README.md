@@ -14,6 +14,7 @@
     * [Install Percona server on CentOS](#install-percona-server-on-centos)
     * [Install MariaDB on Ubuntu](#install-mariadb-on-ubuntu)
     * [Install Plugins](#install-plugins)
+    * [Use Percona XtraBackup](#use-percona-xtrabackup)
 4. [Reference - An under-the-hood peek at what the module is doing and how](REFERENCE.md)
 5. [Limitations - OS compatibility, etc.](#limitations)
 6. [Development - Guide for contributing to the module](#development)
@@ -153,6 +154,24 @@ mysql::db { 'mydb':
 
 To add custom MySQL configuration, place additional files into `includedir`. This allows you to override settings or add additional ones, which is helpful if you don't use `override_options` in `mysql::server`. The `includedir` location is by default set to `/etc/mysql/conf.d`.
 
+### Managing Root Passwords
+
+If you want the password managed by puppet for `127.0.0.1` and `::1` as an end user you would need to explicitly manage them with additional manifest entries. For example:
+
+```puppet
+mysql_user{ '[root@127.0.0.1]':       
+    ensure        => present,       
+    password_hash => mysql::password($mysql::server::root_password),           
+}    
+ 
+mysql_user{ 'root@::1':       
+    ensure        => present,       
+    password_hash => mysql::password($mysql::server::root_password),    
+} 
+```
+
+**Note:** This module is not designed to carry out additional DNS and aliasing.
+
 ### Work with an existing server
 
 To instantiate databases and users on an existing MySQL server, you need a `.my.cnf` file in `root`'s home directory. This file must specify the remote server address and credentials. For example:
@@ -182,6 +201,36 @@ mysql::db { 'mydb':
 ```
 
 If required, the password can also be an empty string to allow connections without an password.
+
+### Create login paths
+
+This feature works only for the MySQL Community Edition >= 5.6.6.
+
+A login path is a set of options (host, user, password, port and socket) that specify which MySQL server to connect to and which account to authenticate as. The authentication credentials and the other options are stored in an encrypted login file named .mylogin.cnf typically under the users home directory.
+
+More information about MySQL login paths: https://dev.mysql.com/doc/refman/8.0/en/mysql-config-editor.html.
+
+Some example for login paths: 
+```puppet
+mysql_login_path { 'client':
+  owner    => root,
+  host     => 'localhost',
+  user     => 'root',
+  password => Sensitive('secure'),
+  socket   => '/var/run/mysqld/mysqld.sock',
+  ensure   => present,
+}
+
+mysql_login_path { 'remote_db':
+  owner    => root,
+  host     => '10.0.0.1',
+  user     => 'network',
+  password => Sensitive('secure'),
+  port     => 3306,
+  ensure   => present,
+}
+```
+See examples/mysql_login_path.pp for further examples.
 
 ### Install Percona server on CentOS
 
@@ -392,6 +441,69 @@ mysql::server::db:
 ### Install Plugins
 
 Plugins can be installed by using the `mysql_plugin` defined type. See `examples/mysql_plugin.pp` for futher examples.
+
+### Use Percona XtraBackup
+
+This example shows how to configure MySQL backups with Percona XtraBackup. This sets up a weekly cronjob to perform a full backup and additional daily cronjobs for incremental backups. Each backup will create a new directory. A cleanup job will automatically remove backups that are older than 15 days.
+
+```puppet
+yumrepo { 'percona':
+  descr    => 'CentOS $releasever - Percona',
+  baseurl  => 'http://repo.percona.com/release/$releasever/RPMS/$basearch',
+  gpgkey   => 'https://www.percona.com/downloads/RPM-GPG-KEY-percona https://repo.percona.com/yum/PERCONA-PACKAGING-KEY',
+  enabled  => 1,
+  gpgcheck => 1,
+}
+
+class { 'mysql::server::backup':
+  backupuser        => 'myuser',
+  backuppassword    => 'mypassword',
+  backupdir         => '/tmp/backups',
+  provider          => 'xtrabackup',
+  backuprotate      => 15,
+  execpath          => '/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin',
+  time              => ['23', '15'],
+}
+```
+
+If the daily or weekly backup was successful, then the empty file `/tmp/mysqlbackup_success` is created, which makes it easy to monitor the status of the database backup.
+
+After two weeks the backup directory should look similar to the example below.
+
+```
+/tmp/backups/2019-11-10_full
+/tmp/backups/2019-11-11_23-15-01
+/tmp/backups/2019-11-13_23-15-01
+/tmp/backups/2019-11-13_23-15-02
+/tmp/backups/2019-11-14_23-15-01
+/tmp/backups/2019-11-15_23-15-02
+/tmp/backups/2019-11-16_23-15-01
+/tmp/backups/2019-11-17_full
+/tmp/backups/2019-11-18_23-15-01
+/tmp/backups/2019-11-19_23-15-01
+/tmp/backups/2019-11-20_23-15-02
+/tmp/backups/2019-11-21_23-15-01
+/tmp/backups/2019-11-22_23-15-02
+/tmp/backups/2019-11-23_23-15-01
+```
+
+A drawback of using incremental backups is the need to keep at least 7 days of backups, otherwise the full backups is removed early and consecutive incremental backups will fail. Furthermore an incremental backups becomes obsolete once the required full backup was removed.
+
+The next example uses XtraBackup with incremental backups disabled. In this case the daily cronjob will always perform a full backup.
+
+```puppet
+class { 'mysql::server::backup':
+  backupuser          => 'myuser',
+  backuppassword      => 'mypassword',
+  backupdir           => '/tmp/backups',
+  provider            => 'xtrabackup',
+  incremental_backups => false,
+  backuprotate        => 5,
+  execpath            => '/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin',
+  time                => ['23', '15'],
+}
+```
+
 ## Reference
 
 ### Classes
@@ -519,7 +631,7 @@ The MySQL module has an example task that allows a user to execute arbitary SQL 
 
 ## Limitations
 
-For an extensive list of supported operating systems, see [metadata.json](https://github.com/puppetlabs/puppetlabs-mysql/blob/master/metadata.json)
+For an extensive list of supported operating systems, see [metadata.json](https://github.com/puppetlabs/puppetlabs-mysql/blob/main/metadata.json)
 
 **Note:** The mysqlbackup.sh does not work and is not supported on MySQL 5.7 and greater.
 
@@ -549,3 +661,4 @@ This module is based on work by David Schmitt. The following contributors have c
 * Daniël van Eeden
 * Jan-Otto Kröpke
 * Timothy Sven Nelson
+* Andreas Stürz

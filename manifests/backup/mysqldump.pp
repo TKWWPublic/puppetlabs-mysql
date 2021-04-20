@@ -28,10 +28,13 @@ class mysql::backup::mysqldump (
   $optional_args            = [],
   $mysqlbackupdir_ensure    = 'directory',
   $mysqlbackupdir_target    = undef,
+  $incremental_backups      = false,
+  $install_cron             = true,
+  $compression_command      = 'bzcat -zc',
+  $compression_extension    = '.bz2'
 ) inherits mysql::params {
-
   unless $::osfamily == 'FreeBSD' {
-    if $backupcompress {
+    if $backupcompress and $compression_command == 'bzcat -zc' {
       ensure_packages(['bzip2'])
       Package['bzip2'] -> File['mysqlbackup.sh']
     }
@@ -43,10 +46,10 @@ class mysql::backup::mysqldump (
     require       => Class['mysql::server::root_password'],
   }
 
-  if $include_triggers  {
-    $privs = [ 'SELECT', 'RELOAD', 'LOCK TABLES', 'SHOW VIEW', 'PROCESS', 'TRIGGER' ]
+  if $include_triggers {
+    $privs = ['SELECT', 'RELOAD', 'LOCK TABLES', 'SHOW VIEW', 'PROCESS', 'TRIGGER']
   } else {
-    $privs = [ 'SELECT', 'RELOAD', 'LOCK TABLES', 'SHOW VIEW', 'PROCESS' ]
+    $privs = ['SELECT', 'RELOAD', 'LOCK TABLES', 'SHOW VIEW', 'PROCESS']
   }
 
   mysql_grant { "${backupuser}@localhost/*.*":
@@ -57,17 +60,13 @@ class mysql::backup::mysqldump (
     require    => Mysql_user["${backupuser}@localhost"],
   }
 
-  if $::osfamily == 'RedHat' and $::operatingsystemmajrelease == '5' {
-    package {'crontabs':
-      ensure => present,
-    }
-  } elsif $::osfamily == 'RedHat' {
-    package {'cronie':
-      ensure => present,
-    }
-  } elsif $::osfamily != 'FreeBSD' {
-    package {'cron':
-      ensure => present,
+  if $install_cron {
+    if $::osfamily == 'RedHat' and $::operatingsystemmajrelease == '5' {
+      ensure_packages('crontabs')
+    } elsif $::osfamily == 'RedHat' {
+      ensure_packages('cronie')
+    } elsif $::osfamily != 'FreeBSD' {
+      ensure_packages('cron')
     }
   }
 
@@ -108,5 +107,4 @@ class mysql::backup::mysqldump (
       group  => $backupdirgroup,
     }
   }
-
 }

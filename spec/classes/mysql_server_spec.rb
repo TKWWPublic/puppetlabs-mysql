@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
 describe 'mysql::server' do
@@ -77,6 +79,21 @@ describe 'mysql::server' do
           let(:params) { { override_options: { 'mysqld' => { 'datadir' => '/tmp' } } } }
 
           it { is_expected.to contain_mysql_datadir('/tmp') }
+        end
+        context 'with package provider' do
+          let(:params) do
+            {
+              package_provider: 'dpkg',
+              package_source: '/somewhere',
+            }
+          end
+
+          it do
+            is_expected.to contain_package('mysql-server').with(
+              provider: 'dpkg',
+              source: '/somewhere',
+            )
+          end
         end
       end
 

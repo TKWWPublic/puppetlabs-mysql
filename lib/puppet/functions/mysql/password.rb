@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'digest/sha1'
 # @summary
 #   Hash a string as mysql's "PASSWORD()" function would do it
@@ -5,18 +7,36 @@ require 'digest/sha1'
 Puppet::Functions.create_function(:'mysql::password') do
   # @param password
   #   Plain text password.
+  # @param sensitive
+  #   If the mysql password hash should be of datatype Sensitive[String]
   #
   # @return hash
   #   The mysql password hash from the clear text password.
   #
   dispatch :password do
-    required_param 'String', :password
-    return_type 'String'
+    required_param 'Variant[String, Sensitive[String]]', :password
+    optional_param 'Boolean', :sensitive
+    return_type 'Variant[String, Sensitive[String]]'
   end
 
-  def password(password)
-    return '' if password.empty?
-    return password if password =~ %r{\*[A-F0-9]{40}$}
-    '*' + Digest::SHA1.hexdigest(Digest::SHA1.digest(password)).upcase
+  def password(password, sensitive = false)
+    password = password.unwrap if password.is_a?(Puppet::Pops::Types::PSensitiveType::Sensitive)
+
+    # Check if password is already hashed
+    # - mysql_native_password: *{40 hex chars}
+    # - caching_sha2_password: 0x + hex($A${iterations}${salt}{digest})
+    result_string = if %r{^\*[A-F0-9]{40}$}.match?(password) || %r{^0x2441243[A-F0-9]+$}i.match?(password)
+                      password
+                    elsif password.empty?
+                      ''
+                    else
+                      "*#{Digest::SHA1.hexdigest(Digest::SHA1.digest(password)).upcase}"
+                    end
+
+    if sensitive
+      Puppet::Pops::Types::PSensitiveType::Sensitive.new(result_string)
+    else
+      result_string
+    end
   end
 end

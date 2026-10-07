@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
 describe Facter::Util::Fact.to_s do
@@ -8,28 +10,31 @@ describe Facter::Util::Fact.to_s do
   describe 'mysql_server_id' do
     context "igalic's laptop" do
       before :each do
-        Facter.fact(:macaddress).stubs(:value).returns('3c:97:0e:69:fb:e1')
+        allow(Facter).to receive(:value).with(:macaddress).and_return('3c:97:0e:69:fb:e1')
       end
+
       it do
-        Facter.fact(:mysql_server_id).value.to_s.should == '241857808'
+        expect(Facter.fact(:mysql_server_id).value).to eq(241_857_808)
       end
     end
 
     context 'node with lo only' do
       before :each do
-        Facter.fact(:macaddress).stubs(:value).returns('00:00:00:00:00:00')
+        allow(Facter).to receive(:value).with(:macaddress).and_return('00:00:00:00:00:00')
       end
+
       it do
-        Facter.fact(:mysql_server_id).value.to_s.should == '1'
+        expect(Facter.fact(:mysql_server_id).value).to eq(1)
       end
     end
 
     context 'test nil case' do
       before :each do
-        Facter.fact(:macaddress).stubs(:value).returns(nil)
+        allow(Facter).to receive(:value).with(:macaddress).and_return(nil)
       end
+
       it do
-        Facter.fact(:mysql_server_id).value.to_s.should == ''
+        expect(Facter.fact(:mysql_server_id).value).to eq(nil)
       end
     end
   end

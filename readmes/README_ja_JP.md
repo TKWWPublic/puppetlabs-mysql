@@ -107,11 +107,11 @@ mysql::db { 'mydb':
 エクスポートされたリソースを含む別のリソース名を使用するには、次のようにします。
 
 ```puppet
- @@mysql::db { "mydb_${fqdn}":
+ @@mysql::db { "mydb_${facts['networking']['fqdn']}":
   user     => 'myuser',
   password => 'mypass',
   dbname   => 'mydb',
-  host     => ${fqdn},
+  host     => ${facts['networking']['fqdn']},
   grant    => ['SELECT', 'UPDATE'],
   tag      => $domain,
 }
@@ -513,7 +513,7 @@ MySQLモジュールにはサンプルタスクがあり、ユーザはデータ
 
 ## 制約事項
 
-サポートされているオペレーティングシステムの一覧については、[metadata.json](https://github.com/puppetlabs/puppetlabs-mysql/blob/master/metadata.json)を参照してください。
+サポートされているオペレーティングシステムの一覧については、[metadata.json](https://github.com/puppetlabs/puppetlabs-mysql/blob/main/metadata.json)を参照してください。
 
 **注意：** mysqlbackup.shは、MySQL 5.7以降では動作せず、サポートされていません。
 

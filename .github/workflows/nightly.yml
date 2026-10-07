@@ -1,0 +1,32 @@
+name: "nightly"
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  Spec:
+    uses: "puppetlabs/cat-github-actions/.github/workflows/module_ci.yml@main"
+    secrets: "inherit"
+    with:
+      additional_packages: "libcurl4-openssl-dev"
+      ruby_version: "3.2"
+
+  Acceptance:
+    needs: Spec
+    uses: "puppetlabs/cat-github-actions/.github/workflows/module_acceptance.yml@main"
+    with:
+      ruby_version: "3.2"
+      flags: >-
+        --nightly
+        --platform-exclude centos-7
+        --platform-exclude scientific-7
+        --platform-exclude oraclelinux-7
+        --platform-exclude almalinux-8
+        --platform-exclude debian-10
+        --platform-exclude ubuntu-20.04
+        --collection-platform-exclude 9:rhel-7
+        --collection-platform-exclude 9:ubuntu-18.04
+        --arch-exclude arm
+    secrets: "inherit"

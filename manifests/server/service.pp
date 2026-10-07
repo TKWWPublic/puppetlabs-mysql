@@ -17,7 +17,7 @@ class mysql::server::service {
   }
 
   if $mysql::server::override_options and $mysql::server::override_options['mysqld']
-      and $mysql::server::override_options['mysqld']['user'] {
+  and $mysql::server::override_options['mysqld']['user'] {
     $mysqluser = $mysql::server::override_options['mysqld']['user']
   } else {
     $mysqluser = $options['mysqld']['user']
@@ -42,20 +42,25 @@ class mysql::server::service {
     # only establish ordering between config file and service if
     # we're managing the config file.
     if $mysql::server::manage_config_file {
-      File['mysql-config-file'] -> Service['mysqld']
+      if $mysql::server::reload_on_config_change {
+        File['mysql-config-file'] ~> Service['mysqld']
+      } else {
+        File['mysql-config-file'] -> Service['mysqld']
+      }
     }
 
     if $mysql::server::override_options and $mysql::server::override_options['mysqld']
-        and $mysql::server::override_options['mysqld']['socket'] {
+    and $mysql::server::override_options['mysqld']['socket'] {
       $mysqlsocket = $mysql::server::override_options['mysqld']['socket']
     } else {
       $mysqlsocket = $options['mysqld']['socket']
     }
 
+    $test_command = ['test', '-S', stdlib::shell_escape($mysqlsocket)]
     if $service_ensure != 'stopped' {
       exec { 'wait_for_mysql_socket_to_open':
-        command   => "test -S ${mysqlsocket}",
-        unless    => "test -S ${mysqlsocket}",
+        command   => $test_command,
+        unless    => [$test_command],
         tries     => '3',
         try_sleep => '10',
         require   => Service['mysqld'],

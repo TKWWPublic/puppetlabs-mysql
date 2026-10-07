@@ -14,9 +14,11 @@
     * [Install Percona server on CentOS](#install-percona-server-on-centos)
     * [Install MariaDB on Ubuntu](#install-mariadb-on-ubuntu)
     * [Install Plugins](#install-plugins)
+    * [Use Percona XtraBackup](#use-percona-xtrabackup)
 4. [Reference - An under-the-hood peek at what the module is doing and how](REFERENCE.md)
 5. [Limitations - OS compatibility, etc.](#limitations)
-6. [Development - Guide for contributing to the module](#development)
+6. [License](#license)
+7. [Development - Guide for contributing to the module](#development)
 
 ## Module Description
 
@@ -30,16 +32,16 @@ This module manages both the installation and configuration of MySQL, as well as
 
 To install a server with the default options:
 
-`include '::mysql::server'`.
+`include mysql::server`.
 
 To customize options, such as the root password or `/etc/my.cnf` settings, you must also pass in an override hash:
 
 ```puppet
-class { '::mysql::server':
+class { 'mysql::server':
   root_password           => 'strongpassword',
   remove_default_accounts => true,
   restart                 => true,
-  override_options        => $override_options
+  override_options        => $override_options,
 }
 ```
 
@@ -60,13 +62,13 @@ To define server options, structure a hash structure of overrides in `mysql::ser
 $override_options = {
   'section' => {
     'item' => 'thing',
-  }
+  },
 }
 ```
 
 For options that you would traditionally represent in this format:
 
-```
+```ini
 [section]
 thing = X
 ```
@@ -81,13 +83,13 @@ If an option needs multiple instances, pass an array. For example,
 $override_options = {
   'mysqld' => {
     'replicate-do-db' => ['base1', 'base2'],
-  }
+  },
 }
 ```
 
 produces
 
-```puppet
+```ini
 [mysqld]
 replicate-do-db = base1
 replicate-do-db = base2
@@ -97,6 +99,10 @@ To implement version specific parameters, specify the version, such as [mysqld-5
 
 If you don’t want to use the default configuration, you can also supply your options to the `$options` parameter instead of `$override_options`.
 Please note that `$options` and `$override_options` are mutually exclusive, you can only use one of them.
+
+By default, the puppet won't reload/restart mysqld when you change an existing
+configuration. If you want to do that, you can set
+`mysql::server::reload_on_config_change` to true.
 
 ### Create a database
 
@@ -138,14 +144,14 @@ If you have installed the mysql client in a non standard bin/sbin path you can s
 
 ```puppet
 mysql::db { 'mydb':
-  user     => 'myuser',
-  password => 'mypass',
-  host     => 'localhost',
-  grant    => ['SELECT', 'UPDATE'],
-  sql      => '/path/to/sqlfile.gz',
-  import_cat_cmd => 'zcat',
-  import_timeout => 900,
-  mysql_exec_path => '/opt/rh/rh-myql57/root/bin'
+  user            => 'myuser',
+  password        => 'mypass',
+  host            => 'localhost',
+  grant           => ['SELECT', 'UPDATE'],
+  sql             => ['/path/to/sqlfile.gz'],
+  import_cat_cmd  => 'zcat',
+  import_timeout  => 900,
+  mysql_exec_path => '/opt/rh/rh-myql57/root/bin',
 }
 ```
 
@@ -153,11 +159,29 @@ mysql::db { 'mydb':
 
 To add custom MySQL configuration, place additional files into `includedir`. This allows you to override settings or add additional ones, which is helpful if you don't use `override_options` in `mysql::server`. The `includedir` location is by default set to `/etc/mysql/conf.d`.
 
+### Managing Root Passwords
+
+If you want the password managed by puppet for `127.0.0.1` and `::1` as an end user you would need to explicitly manage them with additional manifest entries. For example:
+
+```puppet
+mysql_user { '[root@127.0.0.1]':
+  ensure        => present,
+  password_hash => mysql::password($mysql::server::root_password),
+}
+
+mysql_user { 'root@::1':
+  ensure        => present,
+  password_hash => mysql::password($mysql::server::root_password),
+}
+```
+
+**Note:** This module is not designed to carry out additional DNS and aliasing.
+
 ### Work with an existing server
 
 To instantiate databases and users on an existing MySQL server, you need a `.my.cnf` file in `root`'s home directory. This file must specify the remote server address and credentials. For example:
 
-```puppet
+```ini
 [client]
 user=root
 host=localhost
@@ -183,6 +207,37 @@ mysql::db { 'mydb':
 
 If required, the password can also be an empty string to allow connections without an password.
 
+### Create login paths
+
+This feature works only for the MySQL Community Edition >= 5.6.6.
+
+A login path is a set of options (host, user, password, port and socket) that specify which MySQL server to connect to and which account to authenticate as. The authentication credentials and the other options are stored in an encrypted login file named .mylogin.cnf typically under the users home directory.
+
+More information about MySQL login paths: https://dev.mysql.com/doc/refman/8.0/en/mysql-config-editor.html.
+
+Some example for login paths:
+
+```puppet
+mysql_login_path { 'client':
+  owner    => root,
+  host     => 'localhost',
+  user     => 'root',
+  password => Sensitive('secure'),
+  socket   => '/var/run/mysqld/mysqld.sock',
+  ensure   => present,
+}
+
+mysql_login_path { 'remote_db':
+  owner    => root,
+  host     => '10.0.0.1',
+  user     => 'network',
+  password => Sensitive('secure'),
+  port     => 3306,
+  ensure   => present,
+}
+```
+See examples/mysql_login_path.pp for further examples.
+
 ### Install Percona server on CentOS
 
 This example shows how to do a minimal installation of a Percona server on a
@@ -202,7 +257,7 @@ yumrepo { 'percona':
   gpgcheck => 1,
 }
 
-class {'mysql::server':
+class { 'mysql::server':
   package_name     => 'Percona-Server-server-57',
   service_name     => 'mysql',
   config_file      => '/etc/my.cnf',
@@ -216,26 +271,26 @@ class {'mysql::server':
     mysqld_safe => {
       log-error => '/var/log/mysqld.log',
     },
-  }
+  },
 }
 
 # Note: Installing Percona-Server-server-57 also installs Percona-Server-client-57.
 # This shows how to install the Percona MySQL client on its own
-class {'mysql::client':
-  package_name   => 'Percona-Server-client-57'
+class { 'mysql::client':
+  package_name => 'Percona-Server-client-57',
 }
 
 # These packages are normally installed along with Percona-Server-server-57
 # If you needed to install the bindings, however, you could do so with this code
 class { 'mysql::bindings':
-  client_dev_package_name   => 'Percona-Server-shared-57',
-  client_dev                => true,
-  daemon_dev_package_name   => 'Percona-Server-devel-57',
-  daemon_dev                => true,
-  perl_enable               => true,
-  perl_package_name         => 'perl-DBD-MySQL',
-  python_enable             => true,
-  python_package_name       => 'MySQL-python',
+  client_dev_package_name => 'Percona-Server-shared-57',
+  client_dev              => true,
+  daemon_dev_package_name => 'Percona-Server-devel-57',
+  daemon_dev              => true,
+  perl_enable             => true,
+  perl_package_name       => 'perl-DBD-MySQL',
+  python_enable           => true,
+  python_package_name     => 'MySQL-python',
 }
 
 # Dependencies definition
@@ -262,7 +317,7 @@ include apt
 
 apt::source { 'mariadb':
   location => 'http://sfo1.mirrors.digitalocean.com/mariadb/repo/10.3/ubuntu',
-  release  => $::lsbdistcodename,
+  release  => $::facts['os']['codename'],
   repos    => 'main',
   key      => {
     id     => '177F4010FE56CA3336300305F1656F24C74CD1D8',
@@ -286,7 +341,7 @@ All the values set here are an example of a working minimal configuration.
 Specify the version of the package you want with the `package_ensure` parameter.
 
 ```puppet
-class {'::mysql::server':
+class { 'mysql::server':
   package_name     => 'mariadb-server',
   package_ensure   => '1:10.3.21+maria~xenial',
   service_name     => 'mysqld',
@@ -299,14 +354,14 @@ class {'::mysql::server':
     mysqld_safe => {
       'log-error' => '/var/log/mysql/mariadb.log',
     },
-  }
+  },
 }
 
 # Dependency management. Only use that part if you are installing the repository
 # as shown in the Preliminary step of this example.
 Apt::Source['mariadb'] ~>
 Class['apt::update'] ->
-Class['::mysql::server']
+Class['mysql::server']
 
 ```
 
@@ -317,7 +372,7 @@ This example shows how to install the MariaDB client and all of the bindings at 
 Specify the version of the package you want with the `package_ensure` parameter.
 
 ```puppet
-class {'::mysql::client':
+class { 'mysql::client':
   package_name    => 'mariadb-client',
   package_ensure  => '1:10.3.21+maria~xenial',
   bindings_enable => true,
@@ -326,7 +381,7 @@ class {'::mysql::client':
 # Dependency management. Only use that part if you are installing the repository as shown in the Preliminary step of this example.
 Apt::Source['mariadb'] ~>
 Class['apt::update'] ->
-Class['::mysql::client']
+Class['mysql::client']
 ```
 
 ### Install MySQL Community server on CentOS
@@ -341,7 +396,7 @@ You can install MySQL Community Server on CentOS using the mysql module and Hier
 In Puppet:
 
 ```puppet
-include ::mysql::server
+include mysql::server
 
 create_resources(yumrepo, hiera('yumrepo', {}))
 
@@ -392,6 +447,93 @@ mysql::server::db:
 ### Install Plugins
 
 Plugins can be installed by using the `mysql_plugin` defined type. See `examples/mysql_plugin.pp` for futher examples.
+
+### Use Percona XtraBackup
+
+This example shows how to configure MySQL backups with Percona XtraBackup. This sets up a weekly cronjob to perform a full backup and additional daily cronjobs for incremental backups. Each backup will create a new directory. A cleanup job will automatically remove backups that are older than 15 days.
+
+```puppet
+yumrepo { 'percona':
+  descr    => 'CentOS $releasever - Percona',
+  baseurl  => 'http://repo.percona.com/release/$releasever/RPMS/$basearch',
+  gpgkey   => 'https://www.percona.com/downloads/RPM-GPG-KEY-percona https://repo.percona.com/yum/PERCONA-PACKAGING-KEY',
+  enabled  => 1,
+  gpgcheck => 1,
+}
+
+class { 'mysql::server::backup':
+  backupuser        => 'myuser',
+  backuppassword    => 'mypassword',
+  backupdir         => '/tmp/backups',
+  provider          => 'xtrabackup',
+  backuprotate      => 15,
+  execpath          => '/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin',
+  time              => ['23', '15'],
+}
+```
+
+If the daily or weekly backup was successful, then the empty file `/tmp/mysqlbackup_success` is created, which makes it easy to monitor the status of the database backup.
+
+After two weeks the backup directory should look similar to the example below.
+
+```
+/tmp/backups/2019-11-10_full
+/tmp/backups/2019-11-11_23-15-01
+/tmp/backups/2019-11-13_23-15-01
+/tmp/backups/2019-11-13_23-15-02
+/tmp/backups/2019-11-14_23-15-01
+/tmp/backups/2019-11-15_23-15-02
+/tmp/backups/2019-11-16_23-15-01
+/tmp/backups/2019-11-17_full
+/tmp/backups/2019-11-18_23-15-01
+/tmp/backups/2019-11-19_23-15-01
+/tmp/backups/2019-11-20_23-15-02
+/tmp/backups/2019-11-21_23-15-01
+/tmp/backups/2019-11-22_23-15-02
+/tmp/backups/2019-11-23_23-15-01
+```
+
+A drawback of using incremental backups is the need to keep at least 7 days of backups, otherwise the full backups is removed early and consecutive incremental backups will fail. Furthermore an incremental backups becomes obsolete once the required full backup was removed.
+
+The next example uses XtraBackup with incremental backups disabled. In this case the daily cronjob will always perform a full backup.
+
+```puppet
+class { 'mysql::server::backup':
+  backupuser          => 'myuser',
+  backuppassword      => 'mypassword',
+  backupdir           => '/tmp/backups',
+  provider            => 'xtrabackup',
+  incremental_backups => false,
+  backuprotate        => 5,
+  execpath            => '/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin',
+  time                => ['23', '15'],
+}
+```
+
+The next example shows how to use mariabackup (a fork of xtrabackup) as a backup provider.
+Note that on most Linux/BSD distributions, this will require setting `backupmethod_package => 'mariadb-backup'` in the `mysql::server::backup` declaration in order to override the default xtrabackup package (`percona-xtrabackup`).
+
+```puppet
+class { 'mysql::server':
+  package_name            => 'mariadb-server',
+  package_ensure          => '1:10.3.21+maria~xenial',
+  service_name            => 'mysqld',
+  root_password           => 'AVeryStrongPasswordUShouldEncrypt!',
+}
+
+class { 'mysql::server::backup':
+  backupuser              => 'mariabackup',
+  backuppassword          => 'AVeryStrongPasswordUShouldEncrypt!',
+  provider                => 'xtrabackup',
+  backupmethod            => 'mariabackup',
+  backupmethod_package    => 'mariadb-backup',
+  backupdir               => '/tmp/backups',
+  backuprotate            => 15,
+  execpath                => '/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin',
+  time                    => ['23', '15'],
+}
+```
+
 ## Reference
 
 ### Classes
@@ -399,8 +541,6 @@ Plugins can be installed by using the `mysql_plugin` defined type. See `examples
 #### Public classes
 
 * [`mysql::server`](#mysqlserver): Installs and configures MySQL.
-* [`mysql::server::monitor`](#mysqlservermonitor): Sets up a monitoring user.
-* [`mysql::server::mysqltuner`](#mysqlservermysqltuner): Installs MySQL tuner script.
 * [`mysql::server::backup`](#mysqlserverbackup): Sets up MySQL backups via cron.
 * [`mysql::bindings`](#mysqlbindings): Installs various MySQL language bindings.
 * [`mysql::client`](#mysqlclient): Installs MySQL client (for non-servers).
@@ -489,11 +629,11 @@ When the `/root/.mylogin.cnf` exists the environment variable `MYSQL_TEST_LOGIN_
 This is required if `create_root_user` and `create_root_login_file` are true. If `root_password` is 'UNSET', then `create_root_user` and `create_root_login_file` are assumed to be false --- that is, the MySQL root user and `/root/.mylogin.cnf` are not created.
 
 ```puppet
-class { '::mysql::server':
-root_password          => 'password',
-create_root_my_cnf     => false,
-create_root_login_file => true,
-login_file             => "puppet:///modules/${module_name}/mylogin.cnf",
+class { 'mysql::server':
+  root_password          => 'password',
+  create_root_my_cnf     => false,
+  create_root_login_file => true,
+  login_file             => 'puppet:///modules/${module_name}/mylogin.cnf',
 }
 ```
 
@@ -519,13 +659,17 @@ The MySQL module has an example task that allows a user to execute arbitary SQL 
 
 ## Limitations
 
-For an extensive list of supported operating systems, see [metadata.json](https://github.com/puppetlabs/puppetlabs-mysql/blob/master/metadata.json)
+This module lacks compatibility with the ARM architecture, for an extensive list of supported operating systems, see [metadata.json](https://github.com/puppetlabs/puppetlabs-mysql/blob/main/metadata.json)
 
 **Note:** The mysqlbackup.sh does not work and is not supported on MySQL 5.7 and greater.
 
+## License
+
+This codebase is licensed under the Apache2.0 licensing, however due to the nature of the codebase the open source dependencies may also use a combination of [AGPL](https://opensource.org/license/agpl-v3/), [BSD-2](https://opensource.org/license/bsd-2-clause/), [BSD-3](https://opensource.org/license/bsd-3-clause/), [GPL2.0](https://opensource.org/license/gpl-2-0/), [LGPL](https://opensource.org/license/lgpl-3-0/), [MIT](https://opensource.org/license/mit/) and [MPL](https://opensource.org/license/mpl-2-0/) Licensing.
+
 ## Development
 
-We are experimenting with a new tool for running acceptance tests. Its name is [puppet_litmus](https://github.com/puppetlabs/puppet_litmus) this replaces beaker as the test runner. To run the acceptance tests follow the instructions from this point [here](https://github.com/puppetlabs/puppet_litmus/wiki/Tutorial:-use-Litmus-to-execute-acceptance-tests-with-a-sample-module-(MoTD)#install-the-necessary-gems-for-the-module).
+We are experimenting with a new tool for running acceptance tests. Its name is [puppet_litmus](https://github.com/puppetlabs/puppet_litmus) this replaces beaker as the test runner. To run the acceptance tests follow the [instructions](https://puppetlabs.github.io/litmus/Running-acceptance-tests.html) from the Litmus documentation.
 
 Puppet modules on the Puppet Forge are open projects, and community contributions are essential for keeping them great. We can't access the huge number of platforms and myriad of hardware, software, and deployment configurations that Puppet is intended to serve.
 
@@ -535,17 +679,4 @@ Check out our the complete [module contribution guide](https://puppet.com/docs/p
 
 ### Authors
 
-This module is based on work by David Schmitt. The following contributors have contributed to this module (beyond Puppet Labs):
-
-* Larry Ludwig
-* Christian G. Warden
-* Daniel Black
-* Justin Ellison
-* Lowe Schmidt
-* Matthias Pigulla
-* William Van Hevelingen
-* Michael Arnold
-* Chris Weyl
-* Daniël van Eeden
-* Jan-Otto Kröpke
-* Timothy Sven Nelson
+This module is based on work by David Schmitt. Thank you to all of our [contributors](https://github.com/puppetlabs/puppetlabs-mysql/graphs/contributors).

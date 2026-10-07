@@ -1,15 +1,19 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
 describe 'mysql::backup::xtrabackup' do
   on_supported_os.each do |os, facts|
     context "on #{os}" do
       let(:pre_condition) do
-        <<-EOF
+        <<-MANIFEST
           class { 'mysql::server': }
-        EOF
+        MANIFEST
       end
       let(:facts) do
-        facts.merge(root_home: '/root')
+        facts.merge(root_home: '/root',
+                    mysql_version: '5.7',
+                    mysld_version: 'mysqld  Ver 5.7.38 for Linux on x86_64 (MySQL Community Server - (GPL)')
       end
 
       let(:default_params) do
@@ -21,36 +25,69 @@ describe 'mysql::backup::xtrabackup' do
           default_params
         end
 
+        it 'does not contain the touch command' do
+          expect(subject).to contain_file('xtrabackup.sh').without_content(
+            %r{(^\s+touch\s+$)},
+          )
+        end
+
         it 'contains the wrapper script' do
-          is_expected.to contain_file('xtrabackup.sh').with_content(
+          expect(subject).to contain_file('xtrabackup.sh').with_content(
             %r{(\n*^xtrabackup\s+.*\$@)},
           )
         end
 
+        package = if facts[:os]['family'] == 'RedHat'
+                    if Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '8') >= 0
+                      'percona-xtrabackup-24'
+                    else
+                      'percona-xtrabackup'
+                    end
+                  elsif facts[:os]['name'] == 'Debian'
+                    'percona-xtrabackup-24'
+                  elsif facts[:os]['name'] == 'Ubuntu'
+                    if Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '20') < 0 &&
+                       Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '16') >= 0
+                      'percona-xtrabackup'
+                    else
+                      'percona-xtrabackup-24'
+                    end
+                  elsif facts[:os]['family'] == 'Suse'
+                    'xtrabackup'
+                  else
+                    'percona-xtrabackup'
+                  end
+
         it 'contains the weekly cronjob' do
-          is_expected.to contain_cron('xtrabackup-weekly')
+          expect(subject).to contain_cron('xtrabackup-weekly')
             .with(
               ensure: 'present',
-              command: '/usr/local/sbin/xtrabackup.sh --target-dir=/tmp --backup',
+              command: '/usr/local/sbin/xtrabackup.sh --target-dir=/tmp/$(date +\%F)_full --backup',
               user: 'root',
               hour: '23',
               minute: '5',
               weekday: '0',
             )
-            .that_requires('Package[percona-xtrabackup]')
+            .that_requires("Package[#{package}]")
         end
 
         it 'contains the daily cronjob for weekdays 1-6' do
-          is_expected.to contain_cron('xtrabackup-daily')
+          dateformat = case facts[:os]['name']
+                       when 'FreeBSD', 'OpenBSD'
+                         '$(date -v-sun +\%F)_full'
+                       else
+                         '$(date -d "last sunday" +\%F)_full'
+                       end
+          expect(subject).to contain_cron('xtrabackup-daily')
             .with(
               ensure: 'present',
-              command: '/usr/local/sbin/xtrabackup.sh --incremental-basedir=/tmp --target-dir=/tmp/$(date +\%F_\%H-\%M-\%S) --backup',
+              command: "/usr/local/sbin/xtrabackup.sh --incremental-basedir=/tmp/#{dateformat} --target-dir=/tmp/$(date +\\%F_\\%H-\\%M-\\%S) --backup",
               user: 'root',
               hour: '23',
               minute: '5',
               weekday: '1-6',
             )
-            .that_requires('Package[percona-xtrabackup]')
+            .that_requires("Package[#{package}]")
         end
       end
 
@@ -61,21 +98,90 @@ describe 'mysql::backup::xtrabackup' do
         end
 
         it 'contains the defined mysql user' do
-          is_expected.to contain_mysql_user('backupuser@localhost')
+          expect(subject).to contain_mysql_user('backupuser@localhost')
             .with(
               ensure: 'present',
               password_hash: '*4110E08DF51E70A4BA1D4E33A84205E38CF3FE58',
             )
             .that_requires('Class[mysql::server::root_password]')
 
-          is_expected.to contain_mysql_grant('backupuser@localhost/*.*')
+          expect(subject).to contain_mysql_grant('backupuser@localhost/*.*')
             .with(
               ensure: 'present',
               user: 'backupuser@localhost',
               table: '*.*',
-              privileges: ['RELOAD', 'PROCESS', 'LOCK TABLES', 'REPLICATION CLIENT'],
+              privileges:
+              if (facts[:os]['name'] == 'Debian' && Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '11') >= 0) ||
+                (facts[:os]['name'] == 'Ubuntu' && Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '22') >= 0)
+                ['BINLOG MONITOR', 'RELOAD', 'PROCESS', 'LOCK TABLES']
+              else
+                ['RELOAD', 'PROCESS', 'LOCK TABLES', 'REPLICATION CLIENT']
+              end,
             )
             .that_requires('Mysql_user[backupuser@localhost]')
+        end
+
+        context 'with MySQL version 5.7' do
+          let(:facts) do
+            facts.merge(mysql_version: '5.7')
+          end
+
+          it {
+            expect(subject).not_to contain_mysql_grant('backupuser@localhost/performance_schema.keyring_component_status')
+            expect(subject).not_to contain_mysql_grant('backupuser@localhost/performance_schema.log_status')
+            expect(subject).not_to contain_mysql_grant('backupuser@localhost/*.*')
+              .with(
+                ensure: 'present',
+                user: 'backupuser@localhost',
+                table: '*.*',
+                privileges:
+                  ['BACKUP_ADMIN'],
+              )
+              .that_requires('Mysql_user[backupuser@localhost]')
+          }
+        end
+
+        context 'with MySQL version 8.0' do
+          let(:facts) do
+            facts.merge(mysql_version: '8.0',
+                        mysld_version: 'mysqld  Ver 8.0.28 for Linux on x86_64 (MySQL Community Server - GPL)')
+          end
+
+          it {
+            expect(subject).to contain_mysql_grant('backupuser@localhost/*.*')
+              .with(
+                ensure: 'present',
+                user: 'backupuser@localhost',
+                table: '*.*',
+                privileges:
+                if (facts[:os]['name'] == 'Debian' && Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '11') >= 0) ||
+                  (facts[:os]['name'] == 'Ubuntu' && Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '22') >= 0)
+                  ['BINLOG MONITOR', 'RELOAD', 'PROCESS', 'LOCK TABLES', 'BACKUP_ADMIN']
+                else
+                  ['RELOAD', 'PROCESS', 'LOCK TABLES', 'REPLICATION CLIENT', 'BACKUP_ADMIN']
+                end,
+              )
+              .that_requires('Mysql_user[backupuser@localhost]')
+            expect(subject).to contain_mysql_grant('backupuser@localhost/performance_schema.keyring_component_status')
+              .with(
+                ensure: 'present',
+                user: 'backupuser@localhost',
+                table: 'performance_schema.keyring_component_status',
+                privileges:
+                  ['SELECT'],
+              )
+              .that_requires('Mysql_user[backupuser@localhost]')
+
+            expect(subject).to contain_mysql_grant('backupuser@localhost/performance_schema.log_status')
+              .with(
+                ensure: 'present',
+                user: 'backupuser@localhost',
+                table: 'performance_schema.log_status',
+                privileges:
+                  ['SELECT'],
+              )
+              .that_requires('Mysql_user[backupuser@localhost]')
+          }
         end
       end
 
@@ -84,30 +190,58 @@ describe 'mysql::backup::xtrabackup' do
           { additional_cron_args: '--backup --skip-ssl' }.merge(default_params)
         end
 
+        package = if facts[:os]['family'] == 'RedHat'
+                    if Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '8') >= 0
+                      'percona-xtrabackup-24'
+                    else
+                      'percona-xtrabackup'
+                    end
+                  elsif facts[:os]['name'] == 'Debian'
+                    'percona-xtrabackup-24'
+                  elsif facts[:os]['name'] == 'Ubuntu'
+                    if Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '20') < 0 &&
+                       Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '16') >= 0
+                      'percona-xtrabackup'
+                    else
+                      'percona-xtrabackup-24'
+                    end
+                  elsif facts[:os]['family'] == 'Suse'
+                    'xtrabackup'
+                  else
+                    'percona-xtrabackup'
+                  end
+
+        dateformat = case facts[:os]['family']
+                     when 'FreeBSD', 'OpenBSD'
+                       '$(date -v-sun +\%F)_full'
+                     else
+                       '$(date -d "last sunday" +\%F)_full'
+                     end
+
         it 'contains the weekly cronjob' do
-          is_expected.to contain_cron('xtrabackup-weekly')
+          expect(subject).to contain_cron('xtrabackup-weekly')
             .with(
               ensure: 'present',
-              command: '/usr/local/sbin/xtrabackup.sh --target-dir=/tmp --backup --skip-ssl',
+              command: '/usr/local/sbin/xtrabackup.sh --target-dir=/tmp/$(date +\%F)_full --backup --skip-ssl',
               user: 'root',
               hour: '23',
               minute: '5',
               weekday: '0',
             )
-            .that_requires('Package[percona-xtrabackup]')
+            .that_requires("Package[#{package}]")
         end
 
         it 'contains the daily cronjob for weekdays 1-6' do
-          is_expected.to contain_cron('xtrabackup-daily')
+          expect(subject).to contain_cron('xtrabackup-daily')
             .with(
               ensure: 'present',
-              command: '/usr/local/sbin/xtrabackup.sh --incremental-basedir=/tmp --target-dir=/tmp/$(date +\%F_\%H-\%M-\%S) --backup --skip-ssl',
+              command: "/usr/local/sbin/xtrabackup.sh --incremental-basedir=/tmp/#{dateformat} --target-dir=/tmp/$(date +\\%F_\\%H-\\%M-\\%S) --backup --skip-ssl",
               user: 'root',
               hour: '23',
               minute: '5',
               weekday: '1-6',
             )
-            .that_requires('Package[percona-xtrabackup]')
+            .that_requires("Package[#{package}]")
         end
       end
 
@@ -117,13 +251,13 @@ describe 'mysql::backup::xtrabackup' do
         end
 
         it 'not contains the weekly cronjob' do
-          is_expected.not_to contain_cron('xtrabackup-weekly')
+          expect(subject).not_to contain_cron('xtrabackup-weekly')
         end
 
         it 'contains the daily cronjob with all weekdays' do
-          is_expected.to contain_cron('xtrabackup-daily').with(
+          expect(subject).to contain_cron('xtrabackup-daily').with(
             ensure: 'present',
-            command: '/usr/local/sbin/xtrabackup.sh --target-dir=/tmp --backup',
+            command: '/usr/local/sbin/xtrabackup.sh --target-dir=/tmp/$(date +\%F_\%H-\%M-\%S) --backup',
             user: 'root',
             hour: '23',
             minute: '5',
@@ -139,8 +273,8 @@ describe 'mysql::backup::xtrabackup' do
         end
 
         it 'contains the prescript' do
-          is_expected.to contain_file('xtrabackup.sh').with_content(
-            %r{.*rsync -a \/tmp backup01.local-lan:\n\nrsync -a \/tmp backup02.local-lan:.*},
+          expect(subject).to contain_file('xtrabackup.sh').with_content(
+            %r{.*rsync -a /tmp backup01.local-lan:\n\nrsync -a /tmp backup02.local-lan:.*},
           )
         end
       end
@@ -152,24 +286,85 @@ describe 'mysql::backup::xtrabackup' do
         end
 
         it 'contains the prostscript' do
-          is_expected.to contain_file('xtrabackup.sh').with_content(
-            %r{.*rsync -a \/tmp backup01.local-lan:\n\nrsync -a \/tmp backup02.local-lan:.*},
+          expect(subject).to contain_file('xtrabackup.sh').with_content(
+            %r{.*rsync -a /tmp backup01.local-lan:\n\nrsync -a /tmp backup02.local-lan:.*},
           )
         end
       end
 
       context 'with mariabackup' do
         let(:params) do
-          { backupmethod: 'mariabackup' }.merge(default_params)
+          { backupmethod: 'mariabackup',
+            backupmethod_package: 'mariadb-backup' }.merge(default_params)
         end
 
         it 'contain the mariabackup executor' do
-          is_expected.to contain_file('xtrabackup.sh').with_content(
+          expect(subject).to contain_file('xtrabackup.sh').with_content(
             %r{(\n*^mariabackup\s+.*\$@)},
           )
         end
       end
+
+      context 'with backup_success_file_path' do
+        let(:params) do
+          { backup_success_file_path: '/tmp/backup_success' }.merge(default_params)
+        end
+
+        it 'contain the touch /tmp/backup_success command' do
+          expect(subject).to contain_file('xtrabackup.sh').with_content(
+            %r{(^\s+touch /tmp/backup_success$)},
+          )
+        end
+      end
+
+      package = if facts[:os]['family'] == 'RedHat'
+                  if Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '8') >= 0
+                    'percona-xtrabackup-24'
+                  else
+                    'percona-xtrabackup'
+                  end
+                elsif facts[:os]['name'] == 'Debian'
+                  'percona-xtrabackup-24'
+                elsif facts[:os]['name'] == 'Ubuntu'
+                  if Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '20') < 0 &&
+                     Puppet::Util::Package.versioncmp(facts[:os]['release']['major'], '16') >= 0
+                    'percona-xtrabackup'
+                  else
+                    'percona-xtrabackup-24'
+                  end
+                elsif facts[:os]['family'] == 'Suse'
+                  'xtrabackup'
+                else
+                  'percona-xtrabackup'
+                end
+
+      context 'with ensure => present' do
+        let(:params) do
+          { ensure: 'present' }.merge(default_params)
+        end
+
+        it 'installs the backup method package' do
+          expect(subject).to contain_package(package).with_ensure('installed')
+        end
+
+        it 'manages the backup directory' do
+          expect(subject).to contain_file('/tmp').with_ensure('directory')
+        end
+      end
+
+      context 'with ensure => absent' do
+        let(:params) do
+          { ensure: 'absent' }.merge(default_params)
+        end
+
+        it 'removes the backup method package' do
+          expect(subject).to contain_package(package).with_ensure('absent')
+        end
+
+        it 'removes the backup directory' do
+          expect(subject).to contain_file('/tmp').with_ensure('absent')
+        end
+      end
     end
   end
-  # rubocop:enable RSpec/NestedGroups
 end

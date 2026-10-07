@@ -1,12 +1,18 @@
+# frozen_string_literal: true
+
 require File.expand_path(File.join(File.dirname(__FILE__), '..', 'mysql'))
 Puppet::Type.type(:mysql_grant).provide(:mysql, parent: Puppet::Provider::Mysql) do
   desc 'Set grants for users in MySQL.'
 
-  commands mysql_raw: 'mysql'
+  superclass::COMMANDS[:mysql_raw].each_with_index do |binary_name, idx|
+    optional_commands "mysql_raw#{idx}": binary_name
+  end
+  confine true: -> { superclass::COMMANDS[:mysql_raw].any? { |binary_name| Puppet::Util.which(binary_name) } }
 
-  def self.instances
-    instances = []
-    users.map do |user|
+  def self.instances(managed_users = nil)
+    instance_configs = {}
+    user_list = (managed_users && !managed_users.empty?) ? managed_users : users
+    user_list.map do |user|
       user_string = cmd_user(user)
       query = "SHOW GRANTS FOR #{user_string};"
       begin
@@ -17,7 +23,8 @@ Puppet::Type.type(:mysql_grant).provide(:mysql, parent: Puppet::Provider::Mysql)
         # Default root user created by mysql_install_db on a host with fqdn
         # of myhost.mydomain.my: root@myhost.mydomain.my, when MySQL is started
         # with --skip-name-resolve.
-        next if e.inspect =~ %r{There is no such grant defined for user}
+        next if e.inspect.include?('There is no such grant defined for user')
+
         raise Puppet::Error, _('#mysql had an error ->  %{inspect}') % { inspect: e.inspect }
       end
       # Once we have the list of grants generate entries for each.
@@ -26,6 +33,7 @@ Puppet::Type.type(:mysql_grant).provide(:mysql, parent: Puppet::Provider::Mysql)
         munged_grant = grant.delete("'").delete('`').delete('"')
         # Matching: GRANT (SELECT, UPDATE) PRIVILEGES ON (*.*) TO ('root')@('127.0.0.1') (WITH GRANT OPTION)
         next unless match = munged_grant.match(%r{^GRANT\s(.+)\sON\s(.+)\sTO\s(.*)@(.*?)(\s.*)?$}) # rubocop:disable Lint/AssignmentInCondition
+
         privileges, table, user, host, rest = match.captures
         table.gsub!('\\\\', '\\')
 
@@ -36,7 +44,7 @@ Puppet::Type.type(:mysql_grant).provide(:mysql, parent: Puppet::Provider::Mysql)
           # split and sort the column_privileges in the parentheses and rejoin
           if priv.include?('(')
             type, col = priv.strip.split(%r{\s+|\b}, 2)
-            type.upcase + ' (' + col.slice(1...-1).strip.split(%r{\s*,\s*}).sort.join(', ') + ')'
+            "#{type.upcase} (#{col.slice(1...-1).strip.split(%r{\s*,\s*}).sort.join(', ')})"
           else
             # Once we split privileges up on the , we need to make sure we
             # shortern ALL PRIVILEGES to just all.
@@ -44,7 +52,7 @@ Puppet::Type.type(:mysql_grant).provide(:mysql, parent: Puppet::Provider::Mysql)
           end
         end
         # Same here, but to remove OPTION leaving just GRANT.
-        options = if rest =~ %r{WITH\sGRANT\sOPTION}
+        options = if %r{WITH\sGRANT\sOPTION}.match?(rest)
                     ['GRANT']
                   else
                     ['NONE']
@@ -52,22 +60,74 @@ Puppet::Type.type(:mysql_grant).provide(:mysql, parent: Puppet::Provider::Mysql)
         # fix double backslash that MySQL prints, so resources match
         table.gsub!('\\\\', '\\')
         # We need to return an array of instances so capture these
-        instances << new(
-          name: "#{user}@#{host}/#{table}",
-          ensure: :present,
-          privileges: stripped_privileges.sort,
-          table: table,
+        name = "#{user}@#{host}/#{table}"
+        if instance_configs.key?(name)
+          instance_config = instance_configs[name]
+          stripped_privileges.concat instance_config[:privileges]
+          options.concat instance_config[:options]
+        end
+
+        sorted_privileges = stripped_privileges.uniq.sort
+        mysql_v8_privileges = ['ALTER', 'ALTER ROUTINE', 'CREATE', 'CREATE ROLE', 'CREATE ROUTINE', 'CREATE TABLESPACE', 'CREATE TEMPORARY TABLES', 'CREATE USER',
+                               'CREATE VIEW', 'DELETE', 'DROP', 'DROP ROLE', 'EVENT', 'EXECUTE', 'FILE', 'INDEX', 'INSERT', 'LOCK TABLES', 'PROCESS', 'REFERENCES',
+                               'RELOAD', 'REPLICATION CLIENT', 'REPLICATION SLAVE', 'SELECT', 'SHOW DATABASES', 'SHOW VIEW', 'SHUTDOWN', 'SUPER', 'TRIGGER',
+                               'UPDATE']
+
+        # ndbcluster has its own set for ALL
+        mysqlcluster_v8_privileges = ['ALL', 'APPLICATION_PASSWORD_ADMIN', 'AUDIT_ABORT_EXEMPT', 'AUDIT_ADMIN', 'AUTHENTICATION_POLICY_ADMIN', 'BACKUP_ADMIN', 'BINLOG_ADMIN',
+                                      'BINLOG_ENCRYPTION_ADMIN', 'CLONE_ADMIN', 'CONNECTION_ADMIN', 'ENCRYPTION_KEY_ADMIN', 'FIREWALL_EXEMPT', 'FLUSH_OPTIMIZER_COSTS', 'FLUSH_STATUS', 'FLUSH_TABLES',
+                                      'FLUSH_USER_RESOURCES', 'GROUP_REPLICATION_ADMIN', 'GROUP_REPLICATION_STREAM', 'INNODB_REDO_LOG_ARCHIVE', 'INNODB_REDO_LOG_ENABLE', 'NDB_STORED_USER',
+                                      'PASSWORDLESS_USER_ADMIN', 'PERSIST_RO_VARIABLES_ADMIN', 'REPLICATION_APPLIER', 'REPLICATION_SLAVE_ADMIN', 'RESOURCE_GROUP_ADMIN', 'RESOURCE_GROUP_USER',
+                                      'ROLE_ADMIN', 'SENSITIVE_VARIABLES_OBSERVER', 'SERVICE_CONNECTION_ADMIN', 'SESSION_VARIABLES_ADMIN', 'SET_USER_ID', 'SHOW_ROUTINE', 'SYSTEM_USER',
+                                      'SYSTEM_VARIABLES_ADMIN', 'TABLE_ENCRYPTION_ADMIN', 'XA_RECOVER_ADMIN']
+
+        # The following two compare blocks are a workaround for issue #1474.
+        mysql_pre_v8_privileges_one = ['ALL', 'APPLICATION_PASSWORD_ADMIN', 'AUDIT_ABORT_EXEMPT', 'AUDIT_ADMIN', 'AUTHENTICATION_POLICY_ADMIN', 'BACKUP_ADMIN', 'BINLOG_ADMIN',
+                                       'BINLOG_ENCRYPTION_ADMIN', 'CLONE_ADMIN', 'CONNECTION_ADMIN', 'ENCRYPTION_KEY_ADMIN', 'FLUSH_OPTIMIZER_COSTS', 'FLUSH_STATUS',
+                                       'FLUSH_TABLES', 'FLUSH_USER_RESOURCES', 'GROUP_REPLICATION_ADMIN', 'GROUP_REPLICATION_STREAM', 'INNODB_REDO_LOG_ARCHIVE',
+                                       'INNODB_REDO_LOG_ENABLE', 'PASSWORDLESS_USER_ADMIN', 'PERSIST_RO_VARIABLES_ADMIN', 'REPLICATION_APPLIER', 'REPLICATION_SLAVE_ADMIN',
+                                       'RESOURCE_GROUP_ADMIN', 'RESOURCE_GROUP_USER', 'ROLE_ADMIN', 'SERVICE_CONNECTION_ADMIN', 'SESSION_VARIABLES_ADMIN', 'SET_USER_ID',
+                                       'SHOW_ROUTINE', 'SYSTEM_USER', 'SYSTEM_VARIABLES_ADMIN', 'TABLE_ENCRYPTION_ADMIN', 'XA_RECOVER_ADMIN']
+        mysql_pre_v8_privileges_two = ['ALL', 'APPLICATION_PASSWORD_ADMIN', 'AUDIT_ABORT_EXEMPT', 'AUDIT_ADMIN', 'AUTHENTICATION_POLICY_ADMIN', 'BACKUP_ADMIN', 'BINLOG_ADMIN',
+                                       'BINLOG_ENCRYPTION_ADMIN', 'CLONE_ADMIN', 'CONNECTION_ADMIN', 'ENCRYPTION_KEY_ADMIN', 'FLUSH_OPTIMIZER_COSTS', 'FLUSH_STATUS',
+                                       'FLUSH_TABLES', 'FLUSH_USER_RESOURCES', 'GROUP_REPLICATION_ADMIN', 'GROUP_REPLICATION_STREAM', 'INNODB_REDO_LOG_ARCHIVE',
+                                       'INNODB_REDO_LOG_ENABLE', 'PASSWORDLESS_USER_ADMIN', 'PERSIST_RO_VARIABLES_ADMIN', 'REPLICATION_APPLIER', 'REPLICATION_SLAVE_ADMIN',
+                                       'RESOURCE_GROUP_ADMIN', 'RESOURCE_GROUP_USER', 'ROLE_ADMIN', 'SENSITIVE_VARIABLES_OBSERVER', 'SERVICE_CONNECTION_ADMIN',
+                                       'SESSION_VARIABLES_ADMIN', 'SET_USER_ID', 'SHOW_ROUTINE', 'SYSTEM_USER', 'SYSTEM_VARIABLES_ADMIN', 'TABLE_ENCRYPTION_ADMIN', 'XA_RECOVER_ADMIN']
+
+        # rubocop:disable Layout/LineLength
+        if (newer_than('mysql' => '8.0.0') && (sorted_privileges == mysql_v8_privileges || sorted_privileges == mysqlcluster_v8_privileges)) || sorted_privileges == mysql_pre_v8_privileges_one || sorted_privileges == mysql_pre_v8_privileges_two
+          sorted_privileges = ['ALL']
+        end
+        # rubocop:enable Layout/LineLength
+
+        instance_configs[name] = {
+          privileges: sorted_privileges,
+          table:,
           user: "#{user}@#{host}",
-          options: options,
-        )
+          options: options.uniq
+        }
       end
+    end
+    instances = []
+    instance_configs.map do |name, config|
+      instances << new(
+        name:,
+        ensure: :present,
+        privileges: config[:privileges],
+        table: config[:table],
+        user: config[:user],
+        options: config[:options],
+      )
     end
     instances
   end
 
   def self.prefetch(resources)
-    users = instances
-    resources.keys.each do |name|
+    # Extract unique user@host values from grant resource names (format: user@host/table)
+    managed_users = resources.keys.map { |name| name.rpartition('/').first }.uniq
+    users = instances(managed_users)
+    resources.each_key do |name|
       if provider = users.find { |user| user.name == name } # rubocop:disable Lint/AssignmentInCondition
         resources[name].provider = provider
       end
@@ -79,9 +139,9 @@ Puppet::Type.type(:mysql_grant).provide(:mysql, parent: Puppet::Provider::Mysql)
     priv_string = self.class.cmd_privs(privileges)
     table_string = privileges.include?('PROXY') ? self.class.cmd_user(table) : self.class.cmd_table(table)
     query = "GRANT #{priv_string}"
-    query << " ON #{table_string}"
-    query << " TO #{user_string}"
-    query << self.class.cmd_options(options) unless options.nil?
+    query += " ON #{table_string}"
+    query += " TO #{user_string}"
+    query += self.class.cmd_options(options) unless options.nil?
     self.class.mysql_caller(query, 'system')
   end
 
@@ -156,12 +216,8 @@ Puppet::Type.type(:mysql_grant).provide(:mysql, parent: Puppet::Provider::Mysql)
 
   def privileges=(privileges)
     diff = diff_privileges(@property_hash[:privileges], privileges)
-    unless diff[:revoke].empty?
-      revoke(@property_hash[:user], @property_hash[:table], diff[:revoke])
-    end
-    unless diff[:grant].empty?
-      grant(@property_hash[:user], @property_hash[:table], diff[:grant], @property_hash[:options])
-    end
+    revoke(@property_hash[:user], @property_hash[:table], diff[:revoke]) unless diff[:revoke].empty?
+    grant(@property_hash[:user], @property_hash[:table], diff[:grant], @property_hash[:options]) unless diff[:grant].empty?
     @property_hash[:privileges] = privileges
     self.privileges
   end

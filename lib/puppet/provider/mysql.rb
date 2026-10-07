@@ -1,18 +1,22 @@
+# frozen_string_literal: true
+
 # Puppet provider for mysql
 class Puppet::Provider::Mysql < Puppet::Provider
   # Without initvars commands won't work.
   initvars
 
   # Make sure we find mysql commands on CentOS and FreeBSD
-  ENV['PATH'] = ENV['PATH'] + ':/usr/libexec:/usr/local/libexec:/usr/local/bin'
+  ENV['PATH'] = "#{ENV.fetch('PATH', nil)}:/usr/libexec:/usr/local/libexec:/usr/local/bin"
   ENV['LD_LIBRARY_PATH'] = [
-    ENV['LD_LIBRARY_PATH'],
+    ENV.fetch('LD_LIBRARY_PATH', nil),
     '/usr/lib',
     '/usr/lib64',
     '/opt/rh/rh-mysql56/root/usr/lib',
     '/opt/rh/rh-mysql56/root/usr/lib64',
     '/opt/rh/rh-mysql57/root/usr/lib',
     '/opt/rh/rh-mysql57/root/usr/lib64',
+    '/opt/rh/rh-mysql80/root/usr/lib',
+    '/opt/rh/rh-mysql80/root/usr/lib64',
     '/opt/rh/rh-mariadb100/root/usr/lib',
     '/opt/rh/rh-mariadb100/root/usr/lib64',
     '/opt/rh/rh-mariadb101/root/usr/lib',
@@ -33,11 +37,23 @@ class Puppet::Provider::Mysql < Puppet::Provider
     '/usr/mysql/5.7/lib64',
   ].join(':')
 
-  # rubocop:disable Style/HashSyntax
-  commands :mysql_raw  => 'mysql'
-  commands :mysqld     => 'mysqld'
-  commands :mysqladmin => 'mysqladmin'
-  # rubocop:enable Style/HashSyntax
+  COMMANDS = {
+    mysql_raw: ['mysql', 'mariadb'],
+    mysqld: ['mysqld', 'mariadbd'],
+    mysqladmin: ['mysqladmin', 'mariadb-admin'],
+  }.freeze
+
+  COMMANDS.each_key do |method_name|
+    define_singleton_method(method_name) do |*args|
+      @mysql_commands ||= Hash.new do |hash, key|
+        hash[key] = COMMANDS[key].each_index.find(-> { 0 }) do |i|
+          respond_to?("#{key}#{i}") && command("#{key}#{i}")
+        end
+      end
+
+      send("#{method_name}#{@mysql_commands[method_name]}", *args)
+    end
+  end
 
   # Optional defaults file
   def self.defaults_file
@@ -58,8 +74,16 @@ class Puppet::Provider::Mysql < Puppet::Provider
   def self.mysqld_version_string
     # As the possibility of the mysqld being remote we need to allow the version string to be overridden,
     # this can be done by facter.value as seen below. In the case that it has not been set and the facter
-    # value is nil we use the mysql -v command to ensure we report the correct version of mysql for later use cases.
-    @mysqld_version_string ||= Facter.value(:mysqld_version) || mysqld('-V')
+    # value is nil we use the mariadbd or mysql command to ensure we report the correct version of engine
+    # for later use cases.
+    @mysqld_version_string ||= Facter.value(:mysqld_version) || version_raw
+  end
+
+  def self.version_raw
+    # get either version of mariadb or mysql
+    `mariadbd -V`
+  rescue
+    `mysqld -V`
   end
 
   def mysqld_version_string
@@ -67,10 +91,10 @@ class Puppet::Provider::Mysql < Puppet::Provider
   end
 
   def self.mysqld_version
-    # note: be prepared for '5.7.6-rc-log' etc results
+    # NOTE: be prepared for '5.7.6-rc-log' etc results
     #       versioncmp detects 5.7.6-log to be newer then 5.7.6
     #       this is why we need the trimming.
-    mysqld_version_string.scan(%r{\d+\.\d+\.\d+}).first unless mysqld_version_string.nil?
+    mysqld_version_string&.scan(%r{\d+\.\d+\.\d+})&.first
   end
 
   def mysqld_version
@@ -78,7 +102,7 @@ class Puppet::Provider::Mysql < Puppet::Provider
   end
 
   def self.newer_than(forks_versions)
-    forks_versions.keys.include?(mysqld_type) && Puppet::Util::Package.versioncmp(mysqld_version, forks_versions[mysqld_type]) >= 0
+    forks_versions.key?(mysqld_type) && Puppet::Util::Package.versioncmp(mysqld_version, forks_versions[mysqld_type]) >= 0
   end
 
   def newer_than(forks_versions)
@@ -86,7 +110,7 @@ class Puppet::Provider::Mysql < Puppet::Provider
   end
 
   def self.older_than(forks_versions)
-    forks_versions.keys.include?(mysqld_type) && Puppet::Util::Package.versioncmp(mysqld_version, forks_versions[mysqld_type]) < 0
+    forks_versions.key?(mysqld_type) && Puppet::Util::Package.versioncmp(mysqld_version, forks_versions[mysqld_type]).negative?
   end
 
   def older_than(forks_versions)
@@ -101,16 +125,16 @@ class Puppet::Provider::Mysql < Puppet::Provider
     if type.eql? 'system'
       if File.file?("#{Facter.value(:root_home)}/.mylogin.cnf")
         ENV['MYSQL_TEST_LOGIN_FILE'] = "#{Facter.value(:root_home)}/.mylogin.cnf"
-        mysql_raw([system_database, '-e', text_of_sql].flatten.compact)
+        mysql_raw([system_database, '-e', text_of_sql].flatten.compact).scrub
       else
-        mysql_raw([defaults_file, system_database, '-e', text_of_sql].flatten.compact)
+        mysql_raw([defaults_file, system_database, '-e', text_of_sql].flatten.compact).scrub
       end
     elsif type.eql? 'regular'
       if File.file?("#{Facter.value(:root_home)}/.mylogin.cnf")
         ENV['MYSQL_TEST_LOGIN_FILE'] = "#{Facter.value(:root_home)}/.mylogin.cnf"
-        mysql_raw(['-NBe', text_of_sql].flatten.compact)
+        mysql_raw(['-NBe', text_of_sql].flatten.compact).scrub
       else
-        mysql_raw([defaults_file, '-NBe', text_of_sql].flatten.compact)
+        mysql_raw([defaults_file, '-NBe', text_of_sql].flatten.compact).scrub
       end
     else
       raise Puppet::Error, _("#mysql_caller: Unrecognised type '%{type}'" % { type: type })
@@ -133,7 +157,8 @@ class Puppet::Provider::Mysql < Puppet::Provider
   # Take root@localhost and munge it to 'root'@'localhost'
   # Take root@id123@localhost and munge it to 'root@id123'@'localhost'
   def self.cmd_user(user)
-    "'#{user.reverse.sub('@', "'@'").reverse}'"
+    escaped_user = user.gsub("'", "''")
+    "'#{escaped_user.reverse.sub('@', "'@'").reverse}'"
   end
 
   # Take root.* and return ON `root`.*
@@ -141,7 +166,7 @@ class Puppet::Provider::Mysql < Puppet::Provider
     table_string = ''
 
     # We can't escape *.* so special case this.
-    table_string << if table == '*.*'
+    table_string += if table == '*.*'
                       '*.*'
                     # Special case also for FUNCTIONs and PROCEDUREs
                     elsif table.start_with?('FUNCTION ', 'PROCEDURE ')
@@ -154,9 +179,10 @@ class Puppet::Provider::Mysql < Puppet::Provider
 
   def self.cmd_privs(privileges)
     return 'ALL PRIVILEGES' if privileges.include?('ALL')
+
     priv_string = ''
     privileges.each do |priv|
-      priv_string << "#{priv}, "
+      priv_string += "#{priv}, "
     end
     # Remove trailing , from the last element.
     priv_string.sub(%r{, $}, '')
@@ -166,7 +192,7 @@ class Puppet::Provider::Mysql < Puppet::Provider
   def self.cmd_options(options)
     option_string = ''
     options.each do |opt|
-      option_string << ' WITH GRANT OPTION' if opt == 'GRANT'
+      option_string += ' WITH GRANT OPTION' if opt == 'GRANT'
     end
     option_string
   end

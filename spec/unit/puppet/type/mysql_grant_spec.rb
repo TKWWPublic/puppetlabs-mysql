@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'puppet'
 require 'puppet/type/mysql_grant'
 require 'spec_helper'
@@ -15,7 +17,7 @@ describe Puppet::Type.type(:mysql_grant) do
 
   context 'PROXY privilege with mysql greater than or equal to 5.5.0' do
     before :each do
-      Facter.stubs(:value).with(:mysql_version).returns('5.5.0')
+      allow(Facter).to receive(:value).with(:mysql_version).and_return('5.5.0')
     end
 
     it 'does not raise error' do
@@ -27,7 +29,7 @@ describe Puppet::Type.type(:mysql_grant) do
 
   context 'PROXY privilege with mysql greater than or equal to 5.4.0' do
     before :each do
-      Facter.stubs(:value).with(:mysql_version).returns('5.4.0')
+      allow(Facter).to receive(:value).with(:mysql_version).and_return('5.4.0')
     end
 
     it 'raises error' do
@@ -68,10 +70,11 @@ describe Puppet::Type.type(:mysql_grant) do
       Puppet::Type.type(:mysql_grant).new(name: 'foo@localhost/*.*', privileges: ['ALL'], table: ['*.*'], user: 'foo@localhost')
     }.not_to raise_error
   end
+
   it 'requires the name to match the user and table #specific' do
     expect {
       Puppet::Type.type(:mysql_grant).new(name: 'foo', privileges: ['ALL'], table: ['*.*'], user: 'foo@localhost')
-    }.to raise_error %r{mysql_grant: `name` `parameter` must match user@host\/table format}
+    }.to raise_error %r{mysql_grant: `name` `parameter` must match user@host/table format}
   end
 
   describe 'it should munge privileges' do

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
 describe Puppet::Type.type(:mysql_database).provider(:mysql) do
@@ -13,32 +15,56 @@ describe Puppet::Type.type(:mysql_database).provider(:mysql) do
     )
   end
   let(:raw_databases) do
-    <<-SQL_OUTPUT
-information_schema
-mydb
-mysql
-performance_schema
-test
+    <<~SQL_OUTPUT
+      information_schema
+      mydb
+      mysql
+      performance_schema
+      test
     SQL_OUTPUT
-    # rubocop:enable Layout/IndentHeredoc
   end
 
   before :each do
-    Facter.stubs(:value).with(:root_home).returns('/root')
-    Puppet::Util.stubs(:which).with('mysql').returns('/usr/bin/mysql')
-    File.stubs(:file?).with('/root/.my.cnf').returns(true)
-    provider.class.stubs(:mysql_caller).with('show databases', 'regular').returns('new_database')
-    provider.class.stubs(:mysql_caller).with(["show variables like '%_database'", 'new_database'], 'regular').returns("character_set_database latin1\ncollation_database latin1_swedish_ci\nskip_show_database OFF") # rubocop:disable Metrics/LineLength
+    allow(Facter).to receive(:value).with(:root_home).and_return('/root')
+    allow(Puppet::Util).to receive(:which).with('mysql').and_return('/usr/bin/mysql')
+    allow(Puppet::Util).to receive(:which).with('mariadb').and_return('/usr/bin/mariadb')
+    allow(File).to receive(:file?).with('/root/.my.cnf').and_return(true)
+    allow(provider.class).to receive(:mysql_caller).with('show databases', 'regular').and_return('new_database')
+    allow(provider.class).to receive(:mysql_caller).with(["show variables like '%_database'", 'new_database'], 'regular').and_return("character_set_database latin1\ncollation_database latin1_swedish_ci\nskip_show_database OFF") # rubocop:disable Layout/LineLength
   end
 
   describe 'self.instances' do
     it 'returns an array of databases' do
-      provider.class.stubs(:mysql_caller).with('show databases', 'regular').returns(raw_databases)
+      allow(provider.class).to receive(:mysql_caller).with('show databases', 'regular').and_return(raw_databases)
       raw_databases.each_line do |db|
-        provider.class.stubs(:mysql_caller).with(["show variables like '%_database'", db.chomp], 'regular').returns("character_set_database latin1\ncollation_database  latin1_swedish_ci\nskip_show_database  OFF") # rubocop:disable Metrics/LineLength
+        allow(provider.class).to receive(:mysql_caller).with(["show variables like '%_database'", db.chomp], 'regular').and_return("character_set_database latin1\ncollation_database  latin1_swedish_ci\nskip_show_database  OFF") # rubocop:disable Layout/LineLength
       end
-      databases = provider.class.instances.map { |x| x.name }
+      databases = provider.class.instances.map(&:name)
       expect(parsed_databases).to match_array(databases)
+    end
+
+    it 'skips managed databases that no longer exist' do
+      allow(provider.class).to receive(:mysql_caller).with(["show variables like '%_database'", 'managed_existing'], 'regular').and_return("character_set_database latin1\ncollation_database  latin1_swedish_ci\nskip_show_database  OFF") # rubocop:disable Layout/LineLength
+      allow(provider.class).to receive(:mysql_caller)
+        .with(["show variables like '%_database'", 'managed_missing'], 'regular')
+        .and_raise(Puppet::ExecutionFailure, 'ERROR 1049 (42000): Unknown database')
+
+      databases = provider.class.instances(['managed_existing', 'managed_missing']).map(&:name)
+      expect(databases).to eq(['managed_existing'])
+    end
+
+    it 're-raises unexpected database lookup failures' do
+      allow(provider.class).to receive(:mysql_caller).with(["show variables like '%_database'", 'managed_broken'], 'regular').and_raise(Puppet::ExecutionFailure, 'ERROR 1044 (42000): Access denied')
+
+      expect { provider.class.instances(['managed_broken']) }.to raise_error(Puppet::ExecutionFailure, 'ERROR 1044 (42000): Access denied')
+    end
+
+    it 'falls back to full scan when managed database list is empty' do
+      allow(provider.class).to receive(:mysql_caller).with('show databases', 'regular').and_return("fallback_db\n")
+      allow(provider.class).to receive(:mysql_caller).with(["show variables like '%_database'", 'fallback_db'], 'regular').and_return("character_set_database latin1\ncollation_database latin1_swedish_ci\nskip_show_database OFF") # rubocop:disable Layout/LineLength
+
+      databases = provider.class.instances([]).map(&:name)
+      expect(databases).to eq(['fallback_db'])
     end
   end
 
@@ -47,20 +73,32 @@ test
       provider.class.instances
       provider.class.prefetch({})
     end
+
+    it 'only prefetches managed databases from resources' do
+      resources = {
+        'db_one' => instance_double(Puppet::Type.type(:mysql_database)),
+        'db_two' => instance_double(Puppet::Type.type(:mysql_database))
+      }
+
+      expect(provider.class).to receive(:instances).with(['db_one', 'db_two']).and_return([])
+      resources.each_value { |res| allow(res).to receive(:provider=) }
+
+      provider.class.prefetch(resources)
+    end
   end
 
   describe 'create' do
     it 'makes a database' do
-      provider.class.expects(:mysql_caller).with("create database if not exists `#{resource[:name]}` character set `#{resource[:charset]}` collate `#{resource[:collate]}`", 'regular')
-      provider.expects(:exists?).returns(true)
+      expect(provider.class).to receive(:mysql_caller).with("create database if not exists `#{resource[:name]}` character set `#{resource[:charset]}` collate `#{resource[:collate]}`", 'regular')
+      expect(provider).to receive(:exists?).and_return(true)
       expect(provider.create).to be_truthy
     end
   end
 
   describe 'destroy' do
     it 'removes a database if present' do
-      provider.class.expects(:mysql_caller).with("drop database if exists `#{resource[:name]}`", 'regular')
-      provider.expects(:exists?).returns(false)
+      expect(provider.class).to receive(:mysql_caller).with("drop database if exists `#{resource[:name]}`", 'regular')
+      expect(provider).to receive(:exists?).and_return(false)
       expect(provider.destroy).to be_truthy
     end
   end
@@ -72,12 +110,17 @@ test
   end
 
   describe 'self.defaults_file' do
+    before :each do
+      allow(Facter).to receive(:value).with(:root_home).and_return('/root')
+    end
+
     it 'sets --defaults-extra-file' do
-      File.stubs(:file?).with('/root/.my.cnf').returns(true)
+      allow(File).to receive(:file?).with('/root/.my.cnf').and_return(true)
       expect(provider.defaults_file).to eq '--defaults-extra-file=/root/.my.cnf'
     end
+
     it 'fails if file missing' do
-      File.stubs(:file?).with('/root/.my.cnf').returns(false)
+      allow(File).to receive(:file?).with('/root/.my.cnf').and_return(false)
       expect(provider.defaults_file).to be_nil
     end
   end
@@ -90,8 +133,7 @@ test
 
   describe 'charset=' do
     it 'changes the charset' do
-      provider.class.expects(:mysql_caller).with("alter database `#{resource[:name]}` CHARACTER SET blah", 'regular').returns('0')
-
+      expect(provider.class).to receive(:mysql_caller).with("alter database `#{resource[:name]}` CHARACTER SET blah", 'regular').and_return('0')
       provider.charset = 'blah'
     end
   end
@@ -104,8 +146,7 @@ test
 
   describe 'collate=' do
     it 'changes the collate' do
-      provider.class.expects(:mysql_caller).with("alter database `#{resource[:name]}` COLLATE blah", 'regular').returns('0')
-
+      expect(provider.class).to receive(:mysql_caller).with("alter database `#{resource[:name]}` COLLATE blah", 'regular').and_return('0')
       provider.collate = 'blah'
     end
   end

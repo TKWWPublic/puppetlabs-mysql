@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'spec_helper'
 
 describe 'mysql::server' do
@@ -11,8 +13,8 @@ describe 'mysql::server' do
         let(:params) { { override_options: { 'mysqld' => { 'socket' => '/var/lib/mysql/mysql.sock' } } } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(mode: '0644',
-                                                                selinux_ignore_defaults: true).with_content(%r{socket = \/var\/lib\/mysql\/mysql.sock})
+          expect(subject).to contain_file('mysql-config-file').with(mode: '0644',
+                                                                    selinux_ignore_defaults: true).with_content(%r{socket = /var/lib/mysql/mysql.sock})
         end
       end
 
@@ -20,7 +22,7 @@ describe 'mysql::server' do
         let(:params) { { override_options: { 'mysqld' => { 'replicate-do-db' => ['base1', 'base2'] } } } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with_content(
+          expect(subject).to contain_file('mysql-config-file').with_content(
             %r{.*replicate-do-db = base1\nreplicate-do-db = base2.*},
           )
         end
@@ -45,11 +47,26 @@ describe 'mysql::server' do
         it { is_expected.to contain_file('mysql-config-file').with_content(%r{ssl = false}) }
       end
 
+      describe 'ssl set to false filters out ssl options' do
+        let(:params) { { override_options: { 'mysqld' => { 'ssl' => false, 'ssl-disable' => false, 'ssl-key' => '/etc/key.pem' } } } }
+
+        it { is_expected.to contain_file('mysql-config-file').with_content(%r{ssl = false}) }
+        it { is_expected.to contain_file('mysql-config-file').without_content(%r{ssl-key}) }
+      end
+
       # ssl-disable (and ssl) are special cased within mysql.
       describe 'possibility of disabling ssl completely' do
         let(:params) { { override_options: { 'mysqld' => { 'ssl' => true, 'ssl-disable' => true } } } }
 
         it { is_expected.to contain_file('mysql-config-file').without_content(%r{ssl = true}) }
+      end
+
+      describe 'ssl-disable filters other ssl options' do
+        let(:params) { { override_options: { 'mysqld' => { 'ssl' => true, 'ssl-disable' => true, 'ssl-key' => '/etc/key.pem' } } } }
+
+        it { is_expected.to contain_file('mysql-config-file').without_content(%r{ssl = true}) }
+        it { is_expected.to contain_file('mysql-config-file').without_content(%r{ssl-disable}) }
+        it { is_expected.to contain_file('mysql-config-file').without_content(%r{ssl-key}) }
       end
 
       describe 'a non ssl option set to true' do
@@ -62,9 +79,25 @@ describe 'mysql::server' do
       context 'with includedir' do
         let(:params) { { includedir: '/etc/my.cnf.d' } }
 
-        it 'makes the directory' do
-          is_expected.to contain_file('/etc/my.cnf.d').with(ensure: :directory,
-                                                            mode: '0755')
+        context 'when purge_conf_dir is false' do
+          let(:params) { super().merge({ 'purge_conf_dir' => false }) }
+
+          it 'makes the directory without recursion' do
+            expect(subject).to contain_file('/etc/my.cnf.d').with(ensure: :directory,
+                                                                  mode: '0755',
+                                                                  recurse: false,
+                                                                  purge: false)
+          end
+        end
+
+        context 'when purge_conf_dir is true' do
+          let(:params) { super().merge({ 'purge_conf_dir' => true }) }
+
+          it 'makes the directory with purge and recursion' do
+            expect(subject).to contain_file('/etc/my.cnf.d').with(ensure: :directory,
+                                                                  recurse: true,
+                                                                  purge: true)
+          end
         end
 
         it { is_expected.to contain_file('mysql-config-file').with_content(%r{!includedir}) }
@@ -74,8 +107,8 @@ describe 'mysql::server' do
         let(:params) { { includedir: '' } }
 
         it 'shouldnt contain the directory' do
-          is_expected.not_to contain_file('mysql-config-file').with(ensure: :directory,
-                                                                    mode: '0755')
+          expect(subject).not_to contain_file('mysql-config-file').with(ensure: :directory,
+                                                                        mode: '0755')
         end
 
         it { is_expected.to contain_file('mysql-config-file').without_content(%r{!includedir}) }
@@ -85,7 +118,7 @@ describe 'mysql::server' do
         let(:params) { { 'config_file_mode' => '0644' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(mode: '0644')
+          expect(subject).to contain_file('mysql-config-file').with(mode: '0644')
         end
       end
 
@@ -93,7 +126,7 @@ describe 'mysql::server' do
         let(:params) { { 'config_file_mode' => '0664' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(mode: '0664')
+          expect(subject).to contain_file('mysql-config-file').with(mode: '0664')
         end
       end
 
@@ -101,7 +134,7 @@ describe 'mysql::server' do
         let(:params) { { 'config_file_mode' => '0660' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(mode: '0660')
+          expect(subject).to contain_file('mysql-config-file').with(mode: '0660')
         end
       end
 
@@ -109,7 +142,7 @@ describe 'mysql::server' do
         let(:params) { { 'config_file_mode' => '0641' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(mode: '0641')
+          expect(subject).to contain_file('mysql-config-file').with(mode: '0641')
         end
       end
 
@@ -117,7 +150,7 @@ describe 'mysql::server' do
         let(:params) { { 'config_file_mode' => '0610' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(mode: '0610')
+          expect(subject).to contain_file('mysql-config-file').with(mode: '0610')
         end
       end
 
@@ -125,7 +158,7 @@ describe 'mysql::server' do
         let(:params) { { 'config_file_mode' => '0600' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(mode: '0600')
+          expect(subject).to contain_file('mysql-config-file').with(mode: '0600')
         end
       end
 
@@ -133,7 +166,7 @@ describe 'mysql::server' do
         let(:params) { { 'mycnf_owner' => '12345' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(
+          expect(subject).to contain_file('mysql-config-file').with(
             owner: '12345',
           )
         end
@@ -143,7 +176,7 @@ describe 'mysql::server' do
         let(:params) { { 'mycnf_group' => '12345' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(
+          expect(subject).to contain_file('mysql-config-file').with(
             group: '12345',
           )
         end
@@ -153,7 +186,7 @@ describe 'mysql::server' do
         let(:params) { { 'mycnf_owner' => '12345', 'mycnf_group' => '12345' } }
 
         it do
-          is_expected.to contain_file('mysql-config-file').with(
+          expect(subject).to contain_file('mysql-config-file').with(
             owner: '12345',
             group: '12345',
           )
